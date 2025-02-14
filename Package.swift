@@ -15,7 +15,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/XcodesOrg/swift-srp", branch: "main"),
         .package(url: "https://github.com/XcodesOrg/AsyncHTTPNetworkService", branch: "main"),
-        .package(url: "https://github.com/kinoroy/LibFido2Swift", exact: "0.1.4")
+        .package(url: "https://github.com/kinoroy/LibFido2Swift", from: "0.1.4")
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
