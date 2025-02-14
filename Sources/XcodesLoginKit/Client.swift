@@ -18,9 +18,16 @@ public class Client {
     /// Security key client. Hold reference for cancelling if needed
     private var fido2: FIDO2?
     
-    public init() {}
+    private let networkService: AsyncHTTPNetworkService
     
+    public init(urlSession: URLSession = .shared) {
+        self.networkService = AsyncHTTPNetworkService(urlSession: urlSession)
+    }
     
+    public var urlSession: URLSession {
+        return networkService.urlSession
+    }
+   
     // MARK: Login
     
     @MainActor
@@ -30,7 +37,7 @@ public class Client {
         let a = clientKeys.public
         
         
-        let serviceKeyResponse: ServiceKeyResponse = try await Current.network.networkService.requestObject(URLRequest.itcServiceKey)
+        let serviceKeyResponse: ServiceKeyResponse = try await networkService.requestObject(URLRequest.itcServiceKey)
         let serviceKey = serviceKeyResponse.authServiceKey
         
         // Fixes issue https://github.com/RobotsAndPencils/XcodesApp/issues/360
@@ -38,7 +45,7 @@ public class Client {
         // Without this addition, Apple ID's would get set to locked
         let hashcash = try await loadHashcash(accountName: accountName, serviceKey: serviceKey)
         
-        let srp: ServerSRPInitResponse = try await Current.network.networkService.requestObject(URLRequest.SRPInit(serviceKey: serviceKey, a: Data(a.bytes).base64EncodedString(), accountName: accountName))
+        let srp: ServerSRPInitResponse = try await networkService.requestObject(URLRequest.SRPInit(serviceKey: serviceKey, a: Data(a.bytes).base64EncodedString(), accountName: accountName))
         
         // SRP
         guard let decodedB = Data(base64Encoded: srp.b) else {
@@ -58,7 +65,7 @@ public class Client {
         let m1 = client.calculateClientProof(username: accountName, salt: [UInt8](decodedSalt), clientPublicKey: a, serverPublicKey: .init([UInt8](decodedB)), sharedSecret: .init(sharedSecret.bytes))
         let m2 = client.calculateServerProof(clientPublicKey: a, clientProof: m1, sharedSecret: .init([UInt8](sharedSecret.bytes)))
 
-        let result: (Data, URLResponse) = try await Current.network.networkService.requestData(URLRequest.SRPComplete(serviceKey: serviceKey, hashcash: hashcash, accountName: accountName, c: srp.c, m1: Data(m1).base64EncodedString(), m2: Data(m2).base64EncodedString()), validators: [])
+        let result: (Data, URLResponse) = try await networkService.requestData(URLRequest.SRPComplete(serviceKey: serviceKey, hashcash: hashcash, accountName: accountName, c: srp.c, m1: Data(m1).base64EncodedString(), m2: Data(m2).base64EncodedString()), validators: [])
         
         guard let httpResponse = result.1 as? HTTPURLResponse else {
             throw NetworkError.invalidResponseFormat
@@ -77,7 +84,7 @@ public class Client {
         
         switch httpResponse.statusCode {
         case 200:
-            let authenticationSession: AppleSession = try await Current.network.networkService.requestObject(URLRequest.olympusSession)
+            let authenticationSession: AppleSession = try await networkService.requestObject(URLRequest.olympusSession)
             return AuthenticationState.authenticated(authenticationSession)
         case 401:
             throw AuthenticationError.invalidUsernameOrPassword(username: accountName)
@@ -102,7 +109,7 @@ public class Client {
         let sessionID = (httpResponse.allHeaderFields["X-Apple-ID-Session-Id"] as! String)
         let scnt = (httpResponse.allHeaderFields["scnt"] as! String)
         
-        let authOptions: AuthOptionsResponse = try await Current.network.networkService.requestObject(URLRequest.authOptions(serviceKey: serviceKey, sessionID: sessionID, scnt: scnt))
+        let authOptions: AuthOptionsResponse = try await networkService.requestObject(URLRequest.authOptions(serviceKey: serviceKey, sessionID: sessionID, scnt: scnt))
         
         switch authOptions.kind {
         case .twoStep:
@@ -140,7 +147,7 @@ public class Client {
     @MainActor
     private func loadHashcash(accountName: String, serviceKey: String) async throws -> String {
         
-        let result: (Data, URLResponse) = try await Current.network.networkService.requestData(URLRequest.federate(account: accountName, serviceKey: serviceKey), validators: [])
+        let result: (Data, URLResponse) = try await networkService.requestData(URLRequest.federate(account: accountName, serviceKey: serviceKey), validators: [])
         let response = result.1
         
         guard let response = response as? HTTPURLResponse else {
@@ -214,13 +221,13 @@ public class Client {
     /// - Returns: AuthenticationState.waitingForSecondFactor
     public func requestSMSSecurityCode(to trustedPhoneNumber: AuthOptionsResponse.TrustedPhoneNumber, authOptions: AuthOptionsResponse, sessionData: AppleSessionData) async throws -> AuthenticationState {
         
-        let result = try await Current.network.networkService.requestVoid(URLRequest.requestSecurityCode(serviceKey: sessionData.serviceKey, sessionID: sessionData.sessionID, scnt: sessionData.scnt, trustedPhoneID: trustedPhoneNumber.id))
+        let result = try await networkService.requestVoid(URLRequest.requestSecurityCode(serviceKey: sessionData.serviceKey, sessionID: sessionData.sessionID, scnt: sessionData.scnt, trustedPhoneID: trustedPhoneNumber.id))
         
         return AuthenticationState.waitingForSecondFactor(.smsSent(trustedPhoneNumber), authOptions, sessionData)
     }
     
     public func submitSecurityCode(_ code: SecurityCode, sessionData: AppleSessionData) async throws ->AuthenticationState {
-        let result: (Data, URLResponse) = try await Current.network.networkService.requestData(URLRequest.submitSecurityCode(serviceKey: sessionData.serviceKey, sessionID: sessionData.sessionID, scnt: sessionData.scnt, code: code), validators: [])
+        let result: (Data, URLResponse) = try await networkService.requestData(URLRequest.submitSecurityCode(serviceKey: sessionData.serviceKey, sessionID: sessionData.sessionID, scnt: sessionData.scnt, code: code), validators: [])
         let response = result.1
         
         guard let response = response as? HTTPURLResponse else {
@@ -244,7 +251,7 @@ public class Client {
     
     public func submitChallenge(response: Data, sessionData: AppleSessionData) async throws -> AuthenticationState {
         
-        let result: (Data, URLResponse) = try await Current.network.networkService.requestData(URLRequest.respondToChallenge(serviceKey: sessionData.serviceKey, sessionID: sessionData.sessionID, scnt: sessionData.scnt, response: response), validators: [])
+        let result: (Data, URLResponse) = try await networkService.requestData(URLRequest.respondToChallenge(serviceKey: sessionData.serviceKey, sessionID: sessionData.sessionID, scnt: sessionData.scnt, response: response), validators: [])
         let response = result.1
         
         guard let response = response as? HTTPURLResponse else {
@@ -267,12 +274,12 @@ public class Client {
     }
     
     func updateSession(serviceKey: String, sessionID: String, scnt: String) async throws -> AuthenticationState {
-        try await Current.network.networkService.requestVoid(URLRequest.trust(serviceKey: serviceKey, sessionID: sessionID, scnt: scnt))
+        try await networkService.requestVoid(URLRequest.trust(serviceKey: serviceKey, sessionID: sessionID, scnt: scnt))
         return try await loadSession()
     }
     
     func loadSession() async throws -> AuthenticationState {
-        let authenticationSession: AppleSession = try await Current.network.networkService.requestObject(URLRequest.olympusSession)
+        let authenticationSession: AppleSession = try await networkService.requestObject(URLRequest.olympusSession)
         return AuthenticationState.authenticated(authenticationSession)
     }
 }
@@ -316,7 +323,7 @@ extension Client {
     /// Clears any cookies from URLSession
     @MainActor
     public func signout() {
-        Current.network.session.configuration.httpCookieStorage?.removeCookies(since: .distantPast)
+        networkService.urlSession.configuration.httpCookieStorage?.removeCookies(since: .distantPast)
     }
 }
 
