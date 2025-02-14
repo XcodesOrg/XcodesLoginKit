@@ -1,0 +1,51 @@
+{
+  "originHash" : "091a2cf4b46c302509b2f128fc3a4b114739e167c4c82e4f33cecc4f032c03d6",
+  "pins" : [
+    {
+      "identity" : "asynchttpnetworkservice",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/XcodesOrg/AsyncHTTPNetworkService",
+      "state" : {
+        "branch" : "main",
+        "revision" : "12e225af8b5dc25afcfabfcf582a165b0581ab19"
+      }
+    },
+    {
+      "identity" : "big-num",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/adam-fowler/big-num",
+      "state" : {
+        "revision" : "5c5511ad06aeb2b97d0868f7394e14a624bfb1c7",
+        "version" : "2.0.2"
+      }
+    },
+    {
+      "identity" : "libfido2swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/kinoroy/LibFido2Swift",
+      "state" : {
+        "revision" : "94d496d6f850dcbb3e8c4a27cd7eeabfad9f14e3",
+        "version" : "0.1.4"
+      }
+    },
+    {
+      "identity" : "swift-crypto",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-crypto",
+      "state" : {
+        "revision" : "ddb07e896a2a8af79512543b1c7eb9797f8898a5",
+        "version" : "1.1.7"
+      }
+    },
+    {
+      "identity" : "swift-srp",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/xcodesOrg/swift-srp",
+      "state" : {
+        "branch" : "main",
+        "revision" : "543aa0122a0257b992f6c7d62d18a26e3dffb8fe"
+      }
+    }
+  ],
+  "version" : 3
+}
