@@ -279,8 +279,6 @@ public class Client {
 
 // MARK: Security Key Authentication
 extension Client {
-    
-    
     public func submitSecurityKeyPinCode(_ pinCode: String, sessionData: AppleSessionData, authOptions: AuthOptionsResponse) async throws -> AuthenticationState {
         guard let fsaChallenge = authOptions.fsaChallenge else {
             throw AuthenticationError.unexpectedSignInResponse(statusCode: 0, message: "Auth response is not a FSA Challenge type. Security not secure key?")
@@ -315,6 +313,11 @@ extension Client {
         self.fido2?.cancel()
     }
     
+    /// Clears any cookies from URLSession
+    @MainActor
+    public func signout() {
+        Current.network.session.configuration.httpCookieStorage?.removeCookies(since: .distantPast)
+    }
 }
 
 extension Data {
