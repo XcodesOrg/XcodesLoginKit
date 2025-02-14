@@ -13,7 +13,7 @@ let package = Package(
             targets: ["XcodesLoginKit"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/xcodesOrg/swift-srp", branch: "main"),
+        .package(url: "https://github.com/XcodesOrg/swift-srp", branch: "main"),
         .package(url: "https://github.com/XcodesOrg/AsyncHTTPNetworkService", branch: "main"),
         .package(url: "https://github.com/kinoroy/LibFido2Swift", exact: "0.1.4")
     ],
