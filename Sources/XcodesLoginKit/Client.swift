@@ -84,8 +84,7 @@ public class Client {
         
         switch httpResponse.statusCode {
         case 200:
-            let authenticationSession: AppleSession = try await networkService.requestObject(URLRequest.olympusSession)
-            return AuthenticationState.authenticated(authenticationSession)
+            return try await self.validateSession()
         case 401:
             throw AuthenticationError.invalidUsernameOrPassword(username: accountName)
         case 403:
@@ -275,10 +274,11 @@ public class Client {
     
     func updateSession(serviceKey: String, sessionID: String, scnt: String) async throws -> AuthenticationState {
         try await networkService.requestVoid(URLRequest.trust(serviceKey: serviceKey, sessionID: sessionID, scnt: scnt))
-        return try await loadSession()
+        return try await validateSession()
     }
     
-    func loadSession() async throws -> AuthenticationState {
+    @MainActor
+    public func validateSession() async throws -> AuthenticationState {
         let authenticationSession: AppleSession = try await networkService.requestObject(URLRequest.olympusSession)
         return AuthenticationState.authenticated(authenticationSession)
     }

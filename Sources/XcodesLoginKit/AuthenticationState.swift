@@ -6,14 +6,14 @@
 //
 
 
-public enum AuthenticationState: Equatable {
+public enum AuthenticationState: Equatable, Sendable {
     case unauthenticated
     case waitingForSecondFactor(TwoFactorOption, AuthOptionsResponse, AppleSessionData)
     case authenticated(AppleSession)
     case notAppleDeveloper
 }
 
-public enum TwoFactorOption: Equatable {
+public enum TwoFactorOption: Equatable, Sendable {
     case smsSent(AuthOptionsResponse.TrustedPhoneNumber)
     case codeSent
     case smsPendingChoice
@@ -21,7 +21,7 @@ public enum TwoFactorOption: Equatable {
 }
 
 @preconcurrency
-public struct AuthOptionsResponse: Equatable, Decodable {
+public struct AuthOptionsResponse: Equatable, Decodable, Sendable {
     public let trustedPhoneNumbers: [TrustedPhoneNumber]?
     public let trustedDevices: [TrustedDevice]?
     public let securityCode: SecurityCodeInfo?
@@ -69,7 +69,7 @@ public struct AuthOptionsResponse: Equatable, Decodable {
         trustedPhoneNumbers?.count == 1 && canFallBackToSMS
     }
     
-    public struct TrustedPhoneNumber: Equatable, Decodable, Identifiable {
+    public struct TrustedPhoneNumber: Equatable, Decodable, Identifiable, Sendable {
         public let id: Int
         public let numberWithDialCode: String
 
@@ -79,7 +79,7 @@ public struct AuthOptionsResponse: Equatable, Decodable {
         }
     }
     
-    public struct TrustedDevice: Equatable, Decodable {
+    public struct TrustedDevice: Equatable, Decodable, Sendable  {
         public let id: String
         public let name: String
         public let modelName: String
@@ -91,7 +91,7 @@ public struct AuthOptionsResponse: Equatable, Decodable {
         }
     }
     
-    public struct SecurityCodeInfo: Equatable, Decodable {
+    public struct SecurityCodeInfo: Equatable, Decodable, Sendable  {
         public let length: Int
         public let tooManyCodesSent: Bool
         public let tooManyCodesValidated: Bool
@@ -118,7 +118,7 @@ public struct AuthOptionsResponse: Equatable, Decodable {
     }
 }
 
-public struct AppleSessionData: Equatable, Identifiable {
+public struct AppleSessionData: Equatable, Identifiable, Sendable {
     public let serviceKey: String
     public let sessionID: String
     public let scnt: String
@@ -132,12 +132,12 @@ public struct AppleSessionData: Equatable, Identifiable {
     }
 }
 
-public struct ServiceError: Decodable, Equatable {
+public struct ServiceError: Decodable, Equatable, Sendable  {
     let code: String
     let message: String
 }
 
-public struct FSAChallenge: Equatable, Decodable {
+public struct FSAChallenge: Equatable, Decodable, Sendable {
     public let challenge: String
     public let keyHandles: [String]
     public let allowedCredentials: String
