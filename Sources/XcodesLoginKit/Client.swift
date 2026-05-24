@@ -10,13 +10,9 @@ import Foundation
 import Crypto
 import CommonCrypto
 import SRP
-import LibFido2Swift
 
-public class Client {
+public final class Client: Sendable {
     private static let authTypes = ["sa", "hsa", "non-sa", "hsa2"]
-
-    /// Security key client. Hold reference for cancelling if needed
-    private var fido2: FIDO2?
     
     private let networkService: AsyncHTTPNetworkService
     
@@ -30,7 +26,6 @@ public class Client {
    
     // MARK: Login
     
-    @MainActor
     public func srpLogin(accountName: String, password: String) async throws -> AuthenticationState {
         let client = SRPClient(configuration: SRPConfiguration<SHA256>(.N2048))
         let clientKeys = client.generateKeys()
@@ -70,9 +65,7 @@ public class Client {
         guard let httpResponse = result.1 as? HTTPURLResponse else {
             throw NetworkError.invalidResponseFormat
         }
-        guard let data = result.0 as? Data else {
-            throw NetworkError.invalidResponseFormat
-        }
+        let data = result.0
         
         var responseBody: SignInResponse
         do {
@@ -98,11 +91,8 @@ public class Client {
             throw AuthenticationError.unexpectedSignInResponse(statusCode: httpResponse.statusCode,
                                                  message: responseBody.serviceErrors?.map { $0.description }.joined(separator: ", "))
         }
-        
-        return AuthenticationState.unauthenticated
     }
     
-    @MainActor
     func handleTwoStepOrFactor(data: Data, response: URLResponse, serviceKey: String) async throws -> AuthenticationState {
         let httpResponse = response as! HTTPURLResponse
         let sessionID = (httpResponse.allHeaderFields["X-Apple-ID-Session-Id"] as! String)
@@ -121,7 +111,6 @@ public class Client {
         }
     }
     
-    @MainActor
     func handleTwoFactor(serviceKey: String, sessionID: String, scnt: String, authOptions: AuthOptionsResponse) -> AuthenticationState {
         let option: TwoFactorOption
 
@@ -143,7 +132,6 @@ public class Client {
         return AuthenticationState.waitingForSecondFactor(option, authOptions, sessionData)
     }
     
-    @MainActor
     private func loadHashcash(accountName: String, serviceKey: String) async throws -> String {
         
         let result: (Data, URLResponse) = try await networkService.requestData(URLRequest.federate(account: accountName, serviceKey: serviceKey), validators: [])
@@ -220,7 +208,7 @@ public class Client {
     /// - Returns: AuthenticationState.waitingForSecondFactor
     public func requestSMSSecurityCode(to trustedPhoneNumber: AuthOptionsResponse.TrustedPhoneNumber, authOptions: AuthOptionsResponse, sessionData: AppleSessionData) async throws -> AuthenticationState {
         
-        let result = try await networkService.requestVoid(URLRequest.requestSecurityCode(serviceKey: sessionData.serviceKey, sessionID: sessionData.sessionID, scnt: sessionData.scnt, trustedPhoneID: trustedPhoneNumber.id))
+        try await networkService.requestVoid(URLRequest.requestSecurityCode(serviceKey: sessionData.serviceKey, sessionID: sessionData.sessionID, scnt: sessionData.scnt, trustedPhoneID: trustedPhoneNumber.id))
         
         return AuthenticationState.waitingForSecondFactor(.smsSent(trustedPhoneNumber), authOptions, sessionData)
     }
@@ -232,13 +220,11 @@ public class Client {
         guard let response = response as? HTTPURLResponse else {
             throw NetworkError.invalidResponseFormat
         }
-        guard let data = result.0 as? Data else {
-            throw NetworkError.invalidResponseFormat
-        }
+        let data = result.0
         
         switch response.statusCode {
         case 200..<300:
-            return await try updateSession(serviceKey: sessionData.serviceKey, sessionID: sessionData.sessionID, scnt: sessionData.scnt)
+            return try await updateSession(serviceKey: sessionData.serviceKey, sessionID: sessionData.sessionID, scnt: sessionData.scnt)
         case 400, 401:
             throw AuthenticationError.incorrectSecurityCode
         case 412:
@@ -256,9 +242,7 @@ public class Client {
         guard let response = response as? HTTPURLResponse else {
             throw NetworkError.invalidResponseFormat
         }
-        guard let data = result.0 as? Data else {
-            throw NetworkError.invalidResponseFormat
-        }
+        let data = result.0
         
         switch response.statusCode {
         case 200..<300:
@@ -277,51 +261,14 @@ public class Client {
         return try await validateSession()
     }
     
-    @MainActor
     public func validateSession() async throws -> AuthenticationState {
         let authenticationSession: AppleSession = try await networkService.requestObject(URLRequest.olympusSession)
         return AuthenticationState.authenticated(authenticationSession)
     }
 }
 
-// MARK: Security Key Authentication
 extension Client {
-    public func submitSecurityKeyPinCode(_ pinCode: String, sessionData: AppleSessionData, authOptions: AuthOptionsResponse) async throws -> AuthenticationState {
-        guard let fsaChallenge = authOptions.fsaChallenge else {
-            throw AuthenticationError.unexpectedSignInResponse(statusCode: 0, message: "Auth response is not a FSA Challenge type. Security not secure key?")
-        }
-        
-        // The challenge is encoded in Base64URL encoding
-        let challengeUrl = fsaChallenge.challenge
-        let challenge = FIDO2.base64urlToBase64(base64url: challengeUrl)
-        let origin = "https://idmsa.apple.com"
-        let rpId = "apple.com"
-        // Allowed creds is sent as a comma separated string
-        let validCreds = fsaChallenge.allowedCredentials.split(separator: ",").map(String.init)
-
-        do {
-            let fido2 = FIDO2()
-            self.fido2 = fido2
-            let response = try fido2.respondToChallenge(args: ChallengeArgs(rpId: rpId, validCredentials: validCreds, devPin: pinCode, challenge: challenge, origin: origin))
-        
-            let respData = try JSONEncoder().encode(response)
-            
-            return try await submitChallenge(response: respData, sessionData: AppleSessionData(serviceKey: sessionData.serviceKey, sessionID: sessionData.sessionID, scnt: sessionData.scnt))
-            
-        } catch FIDO2Error.canceledByUser {
-            // User cancelled the auth flow
-            throw AuthenticationError.userCancelledSecurityKeyAuthentication
-        } catch {
-            throw error
-        }
-    }
-    
-    public func cancelSecurityKeyAssertationRequest() {
-        self.fido2?.cancel()
-    }
-    
     /// Clears any cookies from URLSession
-    @MainActor
     public func signout() {
         networkService.urlSession.configuration.httpCookieStorage?.removeCookies(since: .distantPast)
     }

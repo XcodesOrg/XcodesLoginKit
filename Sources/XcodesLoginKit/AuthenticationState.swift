@@ -113,7 +113,7 @@ public struct AuthOptionsResponse: Equatable, Decodable, Sendable {
         }
     }
     
-    public enum Kind: Equatable {
+    public enum Kind: Equatable, Sendable {
         case twoStep, twoFactor, securityKey, unknown
     }
 }
@@ -143,7 +143,7 @@ public struct FSAChallenge: Equatable, Decodable, Sendable {
     public let allowedCredentials: String
 }
 
-public enum SecurityCode {
+public enum SecurityCode: Sendable {
     case device(code: String)
     case sms(code: String, phoneNumberId: Int)
     
@@ -155,15 +155,15 @@ public enum SecurityCode {
     }
 }
 
-struct ServiceKeyResponse: Decodable {
+struct ServiceKeyResponse: Decodable, Sendable {
     let authServiceKey: String
 }
 
-struct SignInResponse: Decodable {
+struct SignInResponse: Decodable, Sendable {
     let authType: String?
     let serviceErrors: [ServiceError]?
     
-    struct ServiceError: Decodable, CustomStringConvertible {
+    struct ServiceError: Decodable, CustomStringConvertible, Sendable {
         let code: String
         let message: String
         

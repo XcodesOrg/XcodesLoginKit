@@ -7,7 +7,7 @@
 
 import Foundation
 
-public enum AuthenticationError: Swift.Error, LocalizedError, Equatable {
+public enum AuthenticationError: Swift.Error, LocalizedError, Equatable, Sendable {
     case invalidSession
     case invalidHashcash
     case invalidUsernameOrPassword(username: String)
@@ -30,8 +30,8 @@ public enum AuthenticationError: Swift.Error, LocalizedError, Equatable {
             return "Your authentication session is invalid. Try signing in again."
         case .invalidHashcash:
             return "Could not create a hashcash for the session."
-        case .invalidUsernameOrPassword:
-            return "Invalid username and password combination."
+        case let .invalidUsernameOrPassword(username):
+            return "Invalid username and password combination. Attempted to sign in with username \(username)."
         case .incorrectSecurityCode:
             return "The code that was entered is incorrect."
         case let .unexpectedSignInResponse(statusCode, message):

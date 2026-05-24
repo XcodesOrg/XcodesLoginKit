@@ -11,11 +11,15 @@ let package = Package(
         .library(
             name: "XcodesLoginKit",
             targets: ["XcodesLoginKit"]),
+        .library(
+            name: "XcodesLoginKitSecurityKey",
+            targets: ["XcodesLoginKitSecurityKey"]),
     ],
     dependencies: [
         .package(url: "https://github.com/XcodesOrg/swift-srp", branch: "main"),
         .package(url: "https://github.com/XcodesOrg/AsyncHTTPNetworkService", branch: "main"),
-        .package(url: "https://github.com/kinoroy/LibFido2Swift", from: "0.1.4")
+        .package(url: "https://github.com/kinoroy/LibFido2Swift", from: "0.1.4"),
+        .package(url: "https://github.com/jpsim/Yams", .upToNextMinor(from: "5.0.1")),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -25,13 +29,24 @@ let package = Package(
             dependencies: [
                 .product(name: "SRP", package: "swift-srp"),
                 .product(name: "AsyncNetworkService", package: "AsyncHTTPNetworkService"),
-                .product(name: "LibFido2Swift", package: "libfido2swift")
+                "Yams",
             ],
             path: "./Sources")
         ,
+        .target(
+            name: "XcodesLoginKitSecurityKey",
+            dependencies: [
+                "XcodesLoginKit",
+                .product(name: "LibFido2Swift", package: "libfido2swift")
+            ],
+            path: "./SourcesSecurityKey"
+        ),
         .testTarget(
             name: "XcodesLoginKitTests",
-            dependencies: ["XcodesLoginKit"]
+            dependencies: ["XcodesLoginKit"],
+            resources: [
+                .copy("Fixtures"),
+            ]
         ),
     ]
 )

@@ -21,7 +21,7 @@ import CommonCrypto
  #
  #
 */
-public struct Hashcash {
+public struct Hashcash: Sendable {
     /// A function to returned a minted hash, using a bit and resource string
     ///
     /**
@@ -93,4 +93,3 @@ extension String {
         return value.leadingZeroBitCount
     }
 }
-
