@@ -1,5 +1,5 @@
 {
-  "originHash" : "fb8ffc4f1ea8af201ed5b76f31498dceaad2857e804262d87994f3942070a2bc",
+  "originHash" : "db38df1d7f1def65f7f2d6342548320916c6d97825719fcaf91cfeec47c8fff0",
   "pins" : [
     {
       "identity" : "asynchttpnetworkservice",
@@ -40,10 +40,19 @@
     {
       "identity" : "swift-srp",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/xcodesOrg/swift-srp",
+      "location" : "https://github.com/XcodesOrg/swift-srp",
       "state" : {
         "branch" : "main",
         "revision" : "543aa0122a0257b992f6c7d62d18a26e3dffb8fe"
+      }
+    },
+    {
+      "identity" : "yams",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/jpsim/Yams",
+      "state" : {
+        "revision" : "0d9ee7ea8c4ebd4a489ad7a73d5c6cad55d6fed3",
+        "version" : "5.0.6"
       }
     }
   ],

@@ -15,6 +15,7 @@ public extension URL {
     static func submitSecurityCode(_ code: SecurityCode) -> URL { URL(string: "https://idmsa.apple.com/appleauth/auth/verify/\(code.urlPathComponent)/securitycode")! }
     static let trust = URL(string: "https://idmsa.apple.com/appleauth/auth/2sv/trust")!
     static let federate = URL(string: "https://idmsa.apple.com/appleauth/auth/federate")!
+    static let federateValidate = URL(string: "https://idmsa.apple.com/appleauth/auth/federate/validate")!
     static let olympusSession = URL(string: "https://appstoreconnect.apple.com/olympus/v1/session")!
     static let keyAuth = URL(string: "https://idmsa.apple.com/appleauth/auth/verify/security/key")!
     
@@ -161,6 +162,36 @@ public extension URLRequest {
         
         return request
     }
+
+    static func checkFederation(serviceKey: String, accountName: String) -> URLRequest {
+        struct Body: Encodable {
+            let accountName: String
+            let rememberMe = true
+        }
+
+        var request = URLRequest(url: .federate)
+        request.allHTTPHeaderFields = request.allHTTPHeaderFields ?? [:]
+        request.allHTTPHeaderFields?["Content-Type"] = "application/json"
+        request.allHTTPHeaderFields?["X-Requested-With"] = "XMLHttpRequest"
+        request.allHTTPHeaderFields?["X-Apple-Widget-Key"] = serviceKey
+        request.allHTTPHeaderFields?["Accept"] = "application/json"
+        request.httpMethod = "POST"
+        request.httpBody = try? JSONEncoder().encode(Body(accountName: accountName))
+        return request
+    }
+
+    static func federateValidate(widgetKey: String, token: String, relayState: String) -> URLRequest {
+        var components = URLComponents(url: .federateValidate, resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "widgetKey", value: widgetKey),
+            URLQueryItem(name: "token", value: token),
+            URLQueryItem(name: "relayState", value: relayState)
+        ]
+        var request = URLRequest(url: components.url!)
+        request.allHTTPHeaderFields = request.allHTTPHeaderFields ?? [:]
+        request.allHTTPHeaderFields?["Accept"] = "application/json"
+        return request
+    }
     
     static func SRPInit(serviceKey: String, a: String, accountName: String) -> URLRequest {
         struct ServerSRPInitRequest: Encodable {
@@ -207,5 +238,4 @@ public extension URLRequest {
 public enum SRPProtocol: String, Codable, Sendable {
     case s2k, s2k_fo
 }
-
 
