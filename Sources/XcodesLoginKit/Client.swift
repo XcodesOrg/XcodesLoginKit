@@ -25,6 +25,19 @@ public final class Client: Sendable {
     }
    
     // MARK: Login
+
+    public func authenticationState(accountName: String, password: String?) async throws -> AuthenticationState {
+        let federationResponse = try await checkIsFederated(accountName: accountName)
+        if federationResponse.federated {
+            return .waitingForFederatedAuthentication(federationResponse)
+        }
+
+        guard let password, !password.isEmpty else {
+            throw AuthenticationError.missingPasswordForNonFederatedAccount
+        }
+
+        return try await srpLogin(accountName: accountName, password: password)
+    }
     
     public func srpLogin(accountName: String, password: String) async throws -> AuthenticationState {
         let client = SRPClient(configuration: SRPConfiguration<SHA256>(.N2048))
@@ -157,6 +170,83 @@ public final class Client: Sendable {
             throw AuthenticationError.invalidHashcash
         case let code:
             throw AuthenticationError.badStatusCode(statusCode: code, data: nil, response: response)
+        }
+    }
+
+    public func checkFederation(accountName: String, serviceKey: String) async throws -> FederationResponse {
+        try await networkService.requestObject(URLRequest.checkFederation(serviceKey: serviceKey, accountName: accountName))
+    }
+
+    public func checkIsFederated(accountName: String) async throws -> FederationResponse {
+        let serviceKeyResponse: ServiceKeyResponse = try await networkService.requestObject(URLRequest.itcServiceKey)
+        return try await checkFederation(accountName: accountName, serviceKey: serviceKeyResponse.authServiceKey)
+    }
+
+    @discardableResult
+    public func validateFederatedToken(widgetKey: String, token: String, relayState: String) async throws -> AuthenticationState {
+        let result = try await networkService.requestData(
+            URLRequest.federateValidate(widgetKey: widgetKey, token: token, relayState: relayState),
+            validators: []
+        )
+
+        guard let response = result.1 as? HTTPURLResponse else {
+            throw NetworkError.invalidResponseFormat
+        }
+
+        switch response.statusCode {
+        case 200..<300:
+            persistSessionOnlyAppleCookies()
+            return try await validateSession()
+        case 409:
+            return try await handleTwoStepOrFactor(data: result.0, response: response, serviceKey: widgetKey)
+        default:
+            throw AuthenticationError.unexpectedSignInResponse(statusCode: response.statusCode, message: nil)
+        }
+    }
+
+    @discardableResult
+    public func validateFederatedCallbackURL(_ callbackURL: URL) async throws -> AuthenticationState {
+        let callback = try FederatedAuthenticationCallback(callbackURL: callbackURL)
+        return try await validateFederatedToken(
+            widgetKey: callback.widgetKey,
+            token: callback.token,
+            relayState: callback.relayState
+        )
+    }
+
+    @discardableResult
+    public func validateFederatedCallbackURLString(_ callbackURLString: String) async throws -> AuthenticationState {
+        let callback = try FederatedAuthenticationCallback(callbackURLString: callbackURLString)
+        return try await validateFederatedToken(
+            widgetKey: callback.widgetKey,
+            token: callback.token,
+            relayState: callback.relayState
+        )
+    }
+
+    public func persistSessionOnlyAppleCookies(expiring expirationDate: Date = Date(timeIntervalSinceNow: 24 * 60 * 60)) {
+        let appleDomains = [".apple.com", ".idmsa.apple.com", "appstoreconnect.apple.com"]
+        guard let cookieStorage = networkService.urlSession.configuration.httpCookieStorage else { return }
+
+        for cookie in cookieStorage.cookies ?? [] where cookie.isSessionOnly {
+            guard appleDomains.contains(where: { cookie.domain.hasSuffix($0) }) else { continue }
+
+            var properties: [HTTPCookiePropertyKey: Any] = [
+                .name: cookie.name,
+                .value: cookie.value,
+                .domain: cookie.domain,
+                .path: cookie.path,
+                .secure: cookie.isSecure,
+                .expires: expirationDate
+            ]
+            if let version = cookie.properties?[.version] {
+                properties[.version] = version
+            }
+
+            cookieStorage.deleteCookie(cookie)
+            if let persistentCookie = HTTPCookie(properties: properties) {
+                cookieStorage.setCookie(persistentCookie)
+            }
         }
     }
     

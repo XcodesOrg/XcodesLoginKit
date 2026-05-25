@@ -159,6 +159,224 @@ final class XcodesLoginKitTests: XCTestCase {
             XCTAssertEqual(recorder.removedKey, "test@example.com")
         }
     }
+
+    func testClientCheckIsFederatedReturnsFederatedResponse() async throws {
+        let client = Client(urlSession: MockURLProtocol.session { request in
+            switch request.url {
+            case .itcServiceKey:
+                return try Self.fixtureResponse(
+                    for: request,
+                    resource: "ITCServiceKey",
+                    subdirectory: "Fixtures/Login_Federated_Succeeds"
+                )
+            case .federate:
+                return try Self.fixtureResponse(
+                    for: request,
+                    resource: "FederateCheck",
+                    subdirectory: "Fixtures/Login_Federated_Succeeds"
+                )
+            default:
+                XCTFail("Unexpected request to \(String(describing: request.url))")
+                return Self.emptyResponse(for: request, statusCode: 500)
+            }
+        })
+
+        let response = try await client.checkIsFederated(accountName: "test@company.com")
+
+        XCTAssertTrue(response.federated)
+        XCTAssertEqual(response.federatedAuthIntro?.orgName, "Test Corp")
+        XCTAssertEqual(response.federatedAuthIntro?.idpName, "Microsoft Entra")
+        XCTAssertEqual(response.federatedIdpRequest?.idPUrl, "https://login.microsoftonline.com/test-tenant/oauth2/authorize")
+        XCTAssertEqual(response.federatedIdpRequest?.requestParams["login_hint"], "test@company.com")
+        XCTAssertNotNil(response.idpURL)
+    }
+
+    func testClientCheckIsFederatedReturnsNonFederatedResponse() async throws {
+        let client = Client(urlSession: MockURLProtocol.session { request in
+            switch request.url {
+            case .itcServiceKey:
+                return try Self.fixtureResponse(
+                    for: request,
+                    resource: "ITCServiceKey",
+                    subdirectory: "Fixtures/Login_Federated_Succeeds"
+                )
+            case .federate:
+                return try Self.fixtureResponse(
+                    for: request,
+                    resource: "FederateCheckNonFederated",
+                    subdirectory: "Fixtures/Login_Federated_Succeeds"
+                )
+            default:
+                XCTFail("Unexpected request to \(String(describing: request.url))")
+                return Self.emptyResponse(for: request, statusCode: 500)
+            }
+        })
+
+        let response = try await client.checkIsFederated(accountName: "test@example.com")
+
+        XCTAssertFalse(response.federated)
+        XCTAssertNil(response.federatedIdpRequest)
+        XCTAssertNil(response.federatedAuthIntro)
+        XCTAssertNil(response.idpURL)
+    }
+
+    func testClientValidateFederatedTokenSucceeds() async throws {
+        let client = Client(urlSession: MockURLProtocol.session { request in
+            if request.url?.absoluteString.contains("federate/validate") == true {
+                return Self.emptyResponse(for: request, statusCode: 200)
+            } else if request.url == .olympusSession {
+                return try Self.fixtureResponse(
+                    for: request,
+                    resource: "OlympusSession",
+                    subdirectory: "Fixtures/Login_Federated_Succeeds"
+                )
+            } else {
+                XCTFail("Unexpected request to \(String(describing: request.url))")
+                return Self.emptyResponse(for: request, statusCode: 500)
+            }
+        })
+
+        let state = try await client.validateFederatedToken(
+            widgetKey: "test-widget-key",
+            token: "test-token",
+            relayState: "test-relay-state"
+        )
+
+        guard case .authenticated(let session) = state else {
+            return XCTFail("Expected authenticated state")
+        }
+        XCTAssertEqual(session.user.fullName, "Test User")
+    }
+
+    func testClientValidateFederatedTokenUnexpectedStatusCode() async throws {
+        let client = Client(urlSession: MockURLProtocol.session { request in
+            if request.url?.absoluteString.contains("federate/validate") == true {
+                return Self.emptyResponse(for: request, statusCode: 401)
+            } else {
+                XCTFail("Unexpected request to \(String(describing: request.url))")
+                return Self.emptyResponse(for: request, statusCode: 500)
+            }
+        })
+
+        do {
+            _ = try await client.validateFederatedToken(
+                widgetKey: "test-widget-key",
+                token: "test-token",
+                relayState: "test-relay-state"
+            )
+            XCTFail("Expected validation to throw")
+        } catch AuthenticationError.unexpectedSignInResponse(let statusCode, let message) {
+            XCTAssertEqual(statusCode, 401)
+            XCTAssertNil(message)
+        }
+    }
+
+    func testAppleSessionServiceFederatedAccountSkipsPasswordPrompt() async throws {
+        let recorder = AppleSessionRecorder(defaultUsername: "test@company.com")
+        recorder.federationResponse = FederationResponse(
+            federated: true,
+            federatedIdpRequest: FederatedIdpRequest(
+                idPUrl: "https://login.microsoftonline.com/test-tenant/oauth2/authorize",
+                requestParams: ["login_hint": "test@company.com"],
+                httpMethod: "GET"
+            ),
+            federatedAuthIntro: FederatedAuthIntro(
+                orgName: "Test Corp",
+                idpName: "Microsoft Entra",
+                idpUrl: nil,
+                orgType: nil,
+                accountManagementUrl: nil
+            )
+        )
+        recorder.callbackURLString = "https://idmsa.apple.com/IDMSWebAuth/federate/oidc/callback?widgetKey=test-widget-key&token=test-token&relayState=test-relay-state"
+        let service = AppleSessionService(dependencies: recorder.dependencies())
+
+        try await service.loginIfNeeded()
+
+        XCTAssertFalse(recorder.didPromptForPassword)
+        XCTAssertEqual(recorder.openedURL?.host, "login.microsoftonline.com")
+        XCTAssertTrue(recorder.log.contains { $0.contains("federated authentication") })
+        XCTAssertTrue(recorder.didValidateFederatedCallback)
+    }
+
+    func testAppleSessionServiceNonFederatedAccountPromptsPassword() async throws {
+        let recorder = AppleSessionRecorder(defaultUsername: "test@example.com")
+        recorder.password = "password123"
+        recorder.federationResponse = FederationResponse(federated: false)
+        let service = AppleSessionService(dependencies: recorder.dependencies())
+
+        try await service.loginIfNeeded()
+
+        XCTAssertTrue(recorder.didPromptForPassword)
+        XCTAssertNil(recorder.openedURL)
+    }
+}
+
+private extension XcodesLoginKitTests {
+    static func fixtureResponse(for request: URLRequest, resource: String, subdirectory: String) throws -> (Data, HTTPURLResponse) {
+        let url = try XCTUnwrap(Bundle.module.url(forResource: resource, withExtension: "json", subdirectory: subdirectory))
+        let data = try Data(contentsOf: url)
+        return (
+            data,
+            try XCTUnwrap(HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            ))
+        )
+    }
+
+    static func emptyResponse(for request: URLRequest, statusCode: Int) -> (Data, HTTPURLResponse) {
+        (
+            Data(),
+            HTTPURLResponse(
+                url: request.url!,
+                statusCode: statusCode,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+        )
+    }
+}
+
+private final class MockURLProtocol: URLProtocol, @unchecked Sendable {
+    typealias Handler = @Sendable (URLRequest) throws -> (Data, HTTPURLResponse)
+
+    private nonisolated(unsafe) static var handler: Handler?
+
+    static func session(handler: @escaping Handler) -> URLSession {
+        self.handler = handler
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let handler = Self.handler else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+
+        do {
+            let (data, response) = try handler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
 }
 
 private final class URLRecorder: Sendable {
@@ -184,6 +402,13 @@ private final class AppleSessionRecorder: Sendable {
         var didSignout = false
         var removedKey: String?
         var loginOutcome: LoginOutcome = .success
+        var didPromptForPassword = false
+        var federationResponse = FederationResponse(federated: false)
+        var callbackURLString: String?
+        var didValidateFederatedCallback = false
+        var openedURL: URL?
+        var password: String?
+        var log: [String] = []
     }
 
     private let state: OSAllocatedUnfairLock<State>
@@ -213,6 +438,49 @@ private final class AppleSessionRecorder: Sendable {
         }
     }
 
+    var didPromptForPassword: Bool {
+        state.withLock { $0.didPromptForPassword }
+    }
+
+    var federationResponse: FederationResponse {
+        get {
+            state.withLock { $0.federationResponse }
+        }
+        set {
+            state.withLock { $0.federationResponse = newValue }
+        }
+    }
+
+    var callbackURLString: String? {
+        get {
+            state.withLock { $0.callbackURLString }
+        }
+        set {
+            state.withLock { $0.callbackURLString = newValue }
+        }
+    }
+
+    var didValidateFederatedCallback: Bool {
+        state.withLock { $0.didValidateFederatedCallback }
+    }
+
+    var openedURL: URL? {
+        state.withLock { $0.openedURL }
+    }
+
+    var password: String? {
+        get {
+            state.withLock { $0.password }
+        }
+        set {
+            state.withLock { $0.password = newValue }
+        }
+    }
+
+    var log: [String] {
+        state.withLock { $0.log }
+    }
+
     func dependencies() -> AppleSessionService.Dependencies {
         AppleSessionService.Dependencies(
             environmentValue: { _ in nil },
@@ -226,7 +494,13 @@ private final class AppleSessionRecorder: Sendable {
                 self.state.withLock { $0.removedKey = key }
             },
             readLine: { _ in nil },
-            readSecureLine: { _ in nil },
+            readLongLine: { _ in self.state.withLock { $0.callbackURLString } },
+            readSecureLine: { _ in
+                self.state.withLock {
+                    $0.didPromptForPassword = true
+                    return $0.password
+                }
+            },
             validateSession: { throw AuthenticationError.invalidSession },
             login: { _, _ in
                 switch self.loginOutcome {
@@ -236,12 +510,22 @@ private final class AppleSessionRecorder: Sendable {
                     throw AuthenticationError.invalidUsernameOrPassword(username: username)
                 }
             },
+            checkIsFederated: { _ in self.federationResponse },
+            validateFederatedCallbackURL: { _ in
+                self.state.withLock { $0.didValidateFederatedCallback = true }
+            },
+            openURL: { url in
+                self.state.withLock { $0.openedURL = url }
+            },
             signout: {
                 self.state.withLock { $0.didSignout = true }
             },
             loadData: { request in
                 let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
                 return (Data(), response)
+            },
+            log: { message in
+                self.state.withLock { $0.log.append(message) }
             }
         )
     }

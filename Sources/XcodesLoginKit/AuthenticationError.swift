@@ -23,6 +23,9 @@ public enum AuthenticationError: Swift.Error, LocalizedError, Equatable, Sendabl
     case invalidResult(resultString: String?)
     case srpInvalidPublicKey
     case userCancelledSecurityKeyAuthentication
+    case federatedAuthenticationRequired
+    case invalidFederatedAuthenticationCallback
+    case missingPasswordForNonFederatedAccount
     
     public var errorDescription: String? {
         switch self {
@@ -61,6 +64,12 @@ public enum AuthenticationError: Swift.Error, LocalizedError, Equatable, Sendabl
             return "Invalid Key"
         case .userCancelledSecurityKeyAuthentication:
             return "User cancelled security key authorization"
+        case .federatedAuthenticationRequired:
+            return "This account uses federated authentication. Browser-based sign in is required."
+        case .invalidFederatedAuthenticationCallback:
+            return "The federated authentication callback URL is missing required parameters."
+        case .missingPasswordForNonFederatedAccount:
+            return "This Apple ID does not use federated authentication. Enter your password to continue."
         }
     }
 }

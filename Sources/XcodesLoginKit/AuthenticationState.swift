@@ -6,8 +6,11 @@
 //
 
 
+import Foundation
+
 public enum AuthenticationState: Equatable, Sendable {
     case unauthenticated
+    case waitingForFederatedAuthentication(FederationResponse)
     case waitingForSecondFactor(TwoFactorOption, AuthOptionsResponse, AppleSessionData)
     case authenticated(AppleSession)
     case notAppleDeveloper
@@ -187,4 +190,91 @@ public struct AppleSession: Decodable, Sendable, Equatable {
 
 public struct AppleSessionUser: Decodable, Sendable, Equatable {
     public let fullName: String?
+}
+
+public struct FederationResponse: Decodable, Equatable, Sendable {
+    public let federated: Bool
+    public let showFederatedIdpConfirmation: Bool?
+    public let federatedIdpRequest: FederatedIdpRequest?
+    public let federatedAuthIntro: FederatedAuthIntro?
+
+    public init(
+        federated: Bool,
+        showFederatedIdpConfirmation: Bool? = nil,
+        federatedIdpRequest: FederatedIdpRequest? = nil,
+        federatedAuthIntro: FederatedAuthIntro? = nil
+    ) {
+        self.federated = federated
+        self.showFederatedIdpConfirmation = showFederatedIdpConfirmation
+        self.federatedIdpRequest = federatedIdpRequest
+        self.federatedAuthIntro = federatedAuthIntro
+    }
+
+    public var idpURL: URL? {
+        guard let idpRequest = federatedIdpRequest else { return nil }
+        var components = URLComponents(string: idpRequest.idPUrl)
+        components?.queryItems = idpRequest.requestParams.map { key, value in
+            URLQueryItem(name: key, value: value)
+        }
+        return components?.url
+    }
+}
+
+public struct FederatedIdpRequest: Decodable, Equatable, Sendable {
+    public let idPUrl: String
+    public let requestParams: [String: String]
+    public let httpMethod: String?
+
+    public init(idPUrl: String, requestParams: [String: String], httpMethod: String?) {
+        self.idPUrl = idPUrl
+        self.requestParams = requestParams
+        self.httpMethod = httpMethod
+    }
+}
+
+public struct FederatedAuthIntro: Decodable, Equatable, Sendable {
+    public let orgName: String?
+    public let idpName: String?
+    public let idpUrl: String?
+    public let orgType: String?
+    public let accountManagementUrl: String?
+
+    public init(orgName: String?, idpName: String?, idpUrl: String?, orgType: String?, accountManagementUrl: String?) {
+        self.orgName = orgName
+        self.idpName = idpName
+        self.idpUrl = idpUrl
+        self.orgType = orgType
+        self.accountManagementUrl = accountManagementUrl
+    }
+}
+
+public struct FederatedAuthenticationCallback: Equatable, Sendable {
+    public let widgetKey: String
+    public let token: String
+    public let relayState: String
+
+    public init(callbackURL: URL) throws {
+        guard let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false),
+              let queryItems = components.queryItems else {
+            throw AuthenticationError.invalidFederatedAuthenticationCallback
+        }
+
+        guard let widgetKey = queryItems.first(where: { $0.name == "widgetKey" })?.value,
+              let token = queryItems.first(where: { $0.name == "token" })?.value,
+              let relayState = queryItems.first(where: { $0.name == "relayState" })?.value else {
+            throw AuthenticationError.invalidFederatedAuthenticationCallback
+        }
+
+        self.widgetKey = widgetKey
+        self.token = token
+        self.relayState = relayState
+    }
+
+    public init(callbackURLString: String) throws {
+        guard let callbackURL = URL(string: callbackURLString) else {
+            throw AuthenticationError.invalidFederatedAuthenticationCallback
+        }
+
+        try self.init(callbackURL: callbackURL)
+    }
 }

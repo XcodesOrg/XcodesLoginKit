@@ -8,9 +8,13 @@ public actor AppleSessionService {
     public typealias KeychainSet = @Sendable (String, String) throws -> Void
     public typealias KeychainRemove = @Sendable (String) throws -> Void
     public typealias ReadLine = @Sendable (String) -> String?
+    public typealias ReadLongLine = @Sendable (String) -> String?
     public typealias ReadSecureLine = @Sendable (String) -> String?
     public typealias ValidateSession = @Sendable () async throws -> Void
     public typealias Login = @Sendable (String, String) async throws -> Void
+    public typealias CheckIsFederated = @Sendable (String) async throws -> FederationResponse
+    public typealias ValidateFederatedCallbackURL = @Sendable (String) async throws -> Void
+    public typealias OpenURL = @Sendable (URL) -> Void
     public typealias Signout = @Sendable () async -> Void
     public typealias LoadData = @Sendable (URLRequest) async throws -> (Data, URLResponse)
     public typealias Log = @Sendable (String) -> Void
@@ -23,9 +27,13 @@ public actor AppleSessionService {
         public var keychainSet: KeychainSet
         public var keychainRemove: KeychainRemove
         public var readLine: ReadLine
+        public var readLongLine: ReadLongLine
         public var readSecureLine: ReadSecureLine
         public var validateSession: ValidateSession
         public var login: Login
+        public var checkIsFederated: CheckIsFederated
+        public var validateFederatedCallbackURL: ValidateFederatedCallbackURL
+        public var openURL: OpenURL
         public var signout: Signout
         public var loadData: LoadData
         public var log: Log
@@ -38,9 +46,13 @@ public actor AppleSessionService {
             keychainSet: @escaping KeychainSet,
             keychainRemove: @escaping KeychainRemove,
             readLine: @escaping ReadLine,
+            readLongLine: @escaping ReadLongLine,
             readSecureLine: @escaping ReadSecureLine,
             validateSession: @escaping ValidateSession,
             login: @escaping Login,
+            checkIsFederated: @escaping CheckIsFederated,
+            validateFederatedCallbackURL: @escaping ValidateFederatedCallbackURL,
+            openURL: @escaping OpenURL,
             signout: @escaping Signout,
             loadData: @escaping LoadData,
             log: @escaping Log = { _ in }
@@ -52,9 +64,13 @@ public actor AppleSessionService {
             self.keychainSet = keychainSet
             self.keychainRemove = keychainRemove
             self.readLine = readLine
+            self.readLongLine = readLongLine
             self.readSecureLine = readSecureLine
             self.validateSession = validateSession
             self.login = login
+            self.checkIsFederated = checkIsFederated
+            self.validateFederatedCallbackURL = validateFederatedCallbackURL
+            self.openURL = openURL
             self.signout = signout
             self.loadData = loadData
             self.log = log
@@ -106,6 +122,12 @@ public actor AppleSessionService {
             }
             guard let username = possibleUsername else { throw Error.missingUsernameOrPassword }
 
+            let federationResponse = try await dependencies.checkIsFederated(username)
+            if federationResponse.federated {
+                try await handleFederatedLogin(username: username, federationResponse: federationResponse)
+                return
+            }
+
             let passwordPrompt: String
             if hasPromptedForUsername {
                 passwordPrompt = "Apple ID Password: "
@@ -128,6 +150,33 @@ public actor AppleSessionService {
                 dependencies.log("Try entering your password again")
                 try await loginIfNeeded(withUsername: username, shouldPromptForPassword: true)
             }
+        }
+    }
+
+    private func handleFederatedLogin(username: String, federationResponse: FederationResponse) async throws {
+        guard let idpURL = federationResponse.idpURL else {
+            throw AuthenticationError.federatedAuthenticationRequired
+        }
+
+        let orgName = federationResponse.federatedAuthIntro?.orgName ?? "your organization"
+        let idpName = federationResponse.federatedAuthIntro?.idpName
+        let orgNameWithIdp = idpName.map { "\(orgName) (\($0))" } ?? orgName
+
+        dependencies.log("\n- This account uses federated authentication via \(orgNameWithIdp)")
+        dependencies.log("- Your browser will open to complete sign-in")
+        dependencies.log("- After signing in, you will be redirected to a blank page")
+        dependencies.log("- Copy the URL from your browser's address bar, then return here and paste it")
+        dependencies.log("\nOpening your browser...")
+        dependencies.openURL(idpURL)
+
+        guard let callbackURLString = dependencies.readLongLine("\nPaste the URL here: ") else {
+            throw Error.missingUsernameOrPassword
+        }
+
+        try await dependencies.validateFederatedCallbackURL(callbackURLString)
+
+        if dependencies.defaultUsername() != username {
+            try? dependencies.setDefaultUsername(username)
         }
     }
 
