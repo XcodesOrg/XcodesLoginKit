@@ -11,21 +11,47 @@ import Crypto
 import CommonCrypto
 import SRP
 
+/// Performs Apple Developer authentication requests and manages the cookies for those requests.
+///
+/// `Client` is the low-level API for apps that want to drive their own sign-in UI. Call
+/// ``authenticationState(accountName:password:)`` to begin a sign-in attempt, then switch on the
+/// returned ``AuthenticationState`` to handle federated authentication or second-factor challenges.
+/// The client stores successful authentication cookies in the `URLSession` passed to ``init(urlSession:)``.
 public final class Client: Sendable {
     private static let authTypes = ["sa", "hsa", "non-sa", "hsa2"]
     
     private let networkService: AsyncHTTPNetworkService
     
+    /// Creates a client that uses the supplied URL session for all Apple authentication requests.
+    ///
+    /// Use a custom session when you need isolated cookie storage, imported fastlane cookies, or
+    /// test-controlled networking. The session's cookie storage is where authenticated Apple cookies
+    /// are read and written.
+    /// - Parameter urlSession: The session used for requests and cookie persistence.
     public init(urlSession: URLSession = .shared) {
         self.networkService = AsyncHTTPNetworkService(urlSession: urlSession)
     }
     
+    /// The URL session used by the client.
+    ///
+    /// Inspect this when you need direct access to the session's cookie storage after login.
     public var urlSession: URLSession {
         return networkService.urlSession
     }
    
     // MARK: Login
 
+    /// Starts authentication for an Apple ID and returns the next state in the login flow.
+    ///
+    /// For federated Apple IDs this returns ``AuthenticationState/waitingForFederatedAuthentication(_:)``
+    /// without requiring a password. For non-federated Apple IDs, pass a password so the client can
+    /// perform SRP authentication. A successful password login may still return a second-factor state
+    /// that your app must complete with ``requestSMSSecurityCode(to:authOptions:sessionData:)`` or
+    /// ``submitSecurityCode(_:sessionData:)``.
+    /// - Parameters:
+    ///   - accountName: The Apple ID email address.
+    ///   - password: The Apple ID password, or `nil` when checking for federated authentication first.
+    /// - Returns: The current authentication state.
     public func authenticationState(accountName: String, password: String?) async throws -> AuthenticationState {
         let federationResponse = try await checkIsFederated(accountName: accountName)
         if federationResponse.federated {
@@ -39,6 +65,14 @@ public final class Client: Sendable {
         return try await srpLogin(accountName: accountName, password: password)
     }
     
+    /// Signs in a non-federated Apple ID with Secure Remote Password authentication.
+    ///
+    /// Most callers should use ``authenticationState(accountName:password:)`` so federated accounts are
+    /// detected before attempting password authentication.
+    /// - Parameters:
+    ///   - accountName: The Apple ID email address.
+    ///   - password: The Apple ID password.
+    /// - Returns: `.authenticated` when no additional verification is needed, or a second-factor state.
     public func srpLogin(accountName: String, password: String) async throws -> AuthenticationState {
         let client = SRPClient(configuration: SRPConfiguration<SHA256>(.N2048))
         let clientKeys = client.generateKeys()
@@ -173,15 +207,25 @@ public final class Client: Sendable {
         }
     }
 
+    /// Checks whether an account uses federated authentication with an existing Apple auth service key.
+    ///
+    /// Use ``checkIsFederated(accountName:)`` unless you have already loaded a service key as part of a
+    /// custom flow.
     public func checkFederation(accountName: String, serviceKey: String) async throws -> FederationResponse {
         try await networkService.requestObject(URLRequest.checkFederation(serviceKey: serviceKey, accountName: accountName))
     }
 
+    /// Checks whether an Apple ID is federated and, when it is, returns identity-provider details.
     public func checkIsFederated(accountName: String) async throws -> FederationResponse {
         let serviceKeyResponse: ServiceKeyResponse = try await networkService.requestObject(URLRequest.itcServiceKey)
         return try await checkFederation(accountName: accountName, serviceKey: serviceKeyResponse.authServiceKey)
     }
 
+    /// Completes a federated sign-in after the identity provider redirects back with a token.
+    ///
+    /// Pass the callback values from ``FederatedAuthenticationCallback``. On success, the method persists
+    /// session-only Apple cookies and validates the resulting session.
+    /// - Returns: The authenticated state, or a second-factor state if Apple requires additional verification.
     @discardableResult
     public func validateFederatedToken(widgetKey: String, token: String, relayState: String) async throws -> AuthenticationState {
         let result = try await networkService.requestData(
@@ -204,6 +248,10 @@ public final class Client: Sendable {
         }
     }
 
+    /// Completes a federated sign-in from the full callback URL.
+    ///
+    /// This is useful for command-line flows where a user pastes the browser URL after signing in with
+    /// their organization's identity provider.
     @discardableResult
     public func validateFederatedCallbackURL(_ callbackURL: URL) async throws -> AuthenticationState {
         let callback = try FederatedAuthenticationCallback(callbackURL: callbackURL)
@@ -214,6 +262,9 @@ public final class Client: Sendable {
         )
     }
 
+    /// Completes a federated sign-in from the callback URL string.
+    ///
+    /// The URL must contain `widgetKey`, `token`, and `relayState` query parameters.
     @discardableResult
     public func validateFederatedCallbackURLString(_ callbackURLString: String) async throws -> AuthenticationState {
         let callback = try FederatedAuthenticationCallback(callbackURLString: callbackURLString)
@@ -224,6 +275,11 @@ public final class Client: Sendable {
         )
     }
 
+    /// Converts Apple session-only cookies in the client's cookie storage into persistent cookies.
+    ///
+    /// Some federated flows return session-only cookies. Call this if your app needs those cookies to
+    /// survive beyond the current process or session configuration.
+    /// - Parameter expirationDate: The expiration date assigned to converted cookies.
     public func persistSessionOnlyAppleCookies(expiring expirationDate: Date = Date(timeIntervalSinceNow: 24 * 60 * 60)) {
         let appleDomains = [".apple.com", ".idmsa.apple.com", "appstoreconnect.apple.com"]
         guard let cookieStorage = networkService.urlSession.configuration.httpCookieStorage else { return }
@@ -294,8 +350,10 @@ public final class Client: Sendable {
     
     // MARK: MFA
     
-    /// User has chosen to send an SMS to a particular trusted phone number
-    /// - Returns: AuthenticationState.waitingForSecondFactor
+    /// Requests that Apple send an SMS security code to a trusted phone number.
+    ///
+    /// Call this after receiving `.waitingForSecondFactor(.smsPendingChoice, authOptions, sessionData)`.
+    /// - Returns: `.waitingForSecondFactor(.smsSent, authOptions, sessionData)`.
     public func requestSMSSecurityCode(to trustedPhoneNumber: AuthOptionsResponse.TrustedPhoneNumber, authOptions: AuthOptionsResponse, sessionData: AppleSessionData) async throws -> AuthenticationState {
         
         try await networkService.requestVoid(URLRequest.requestSecurityCode(serviceKey: sessionData.serviceKey, sessionID: sessionData.sessionID, scnt: sessionData.scnt, trustedPhoneID: trustedPhoneNumber.id))
@@ -303,7 +361,12 @@ public final class Client: Sendable {
         return AuthenticationState.waitingForSecondFactor(.smsSent(trustedPhoneNumber), authOptions, sessionData)
     }
     
-    public func submitSecurityCode(_ code: SecurityCode, sessionData: AppleSessionData) async throws ->AuthenticationState {
+    /// Submits a trusted-device or SMS verification code to complete two-factor authentication.
+    /// - Parameters:
+    ///   - code: The verification code and its delivery channel.
+    ///   - sessionData: The session headers returned in the second-factor authentication state.
+    /// - Returns: The authenticated state after Apple trusts and validates the session.
+    public func submitSecurityCode(_ code: SecurityCode, sessionData: AppleSessionData) async throws -> AuthenticationState {
         let result: (Data, URLResponse) = try await networkService.requestData(URLRequest.submitSecurityCode(serviceKey: sessionData.serviceKey, sessionID: sessionData.sessionID, scnt: sessionData.scnt, code: code), validators: [])
         let response = result.1
         
@@ -324,6 +387,10 @@ public final class Client: Sendable {
         }
     }
     
+    /// Submits a serialized FSA/security-key challenge response.
+    ///
+    /// Apps using the `XcodesLoginKitSecurityKey` product should usually call
+    /// `submitSecurityKeyPinCode(_:sessionData:authOptions:)` instead.
     public func submitChallenge(response: Data, sessionData: AppleSessionData) async throws -> AuthenticationState {
         
         let result: (Data, URLResponse) = try await networkService.requestData(URLRequest.respondToChallenge(serviceKey: sessionData.serviceKey, sessionID: sessionData.sessionID, scnt: sessionData.scnt, response: response), validators: [])
@@ -351,6 +418,10 @@ public final class Client: Sendable {
         return try await validateSession()
     }
     
+    /// Validates the current cookies and returns the authenticated Apple session.
+    ///
+    /// Call this after importing cookies or when your app starts to check whether the stored session is
+    /// still accepted by Apple.
     public func validateSession() async throws -> AuthenticationState {
         let authenticationSession: AppleSession = try await networkService.requestObject(URLRequest.olympusSession)
         return AuthenticationState.authenticated(authenticationSession)
@@ -358,7 +429,7 @@ public final class Client: Sendable {
 }
 
 extension Client {
-    /// Clears any cookies from URLSession
+    /// Clears all cookies from the client's URL session.
     public func signout() {
         networkService.urlSession.configuration.httpCookieStorage?.removeCookies(since: .distantPast)
     }

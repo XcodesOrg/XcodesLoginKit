@@ -1,9 +1,14 @@
 import Foundation
 import Yams
 
+/// Parses fastlane/Spaceship cookie content into `HTTPCookie` values.
 public final class FastlaneCookieParser: Sendable {
+    /// Creates a cookie parser.
     public init() {}
 
+    /// Parses the raw content of a fastlane cookie file or `FASTLANE_SESSION` value.
+    /// - Parameter cookieString: The serialized cookie data produced by fastlane.
+    /// - Returns: Parsed HTTP cookies.
     public func parse(cookieString: String) throws -> [HTTPCookie] {
         let fixed = cookieString.replacingOccurrences(of: "\\n", with: "\n")
         let cookies = try YAMLDecoder().decode([FastlaneCookie].self, from: fixed)

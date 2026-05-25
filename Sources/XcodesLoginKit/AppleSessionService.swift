@@ -1,5 +1,11 @@
 import Foundation
 
+/// Coordinates credential lookup, prompting, login, validation, and logout for Apple Developer sessions.
+///
+/// `AppleSessionService` is the high-level API for command-line tools and apps that want an injectable
+/// workflow around ``Client``. It can read credentials from environment variables or a keychain, prompt
+/// when credentials are missing, open a browser for federated accounts, and remember the default username
+/// after a successful login.
 public actor AppleSessionService {
     public typealias EnvironmentValue = @Sendable (String) -> String?
     public typealias DefaultUsername = @Sendable () -> String?
@@ -19,25 +25,48 @@ public actor AppleSessionService {
     public typealias LoadData = @Sendable (URLRequest) async throws -> (Data, URLResponse)
     public typealias Log = @Sendable (String) -> Void
 
+    /// Dependencies used by ``AppleSessionService`` to interact with the host app and storage.
+    ///
+    /// Supply closures for environment lookup, keychain access, prompting, browser opening, networking,
+    /// and the underlying login operations. This keeps the service testable and lets each app decide how
+    /// credentials and user interaction should work.
     public struct Dependencies: Sendable {
+        /// Reads a process environment value.
         public var environmentValue: EnvironmentValue
+        /// Returns the remembered default Apple ID, if any.
         public var defaultUsername: DefaultUsername
+        /// Stores or clears the remembered default Apple ID.
         public var setDefaultUsername: SetDefaultUsername
+        /// Reads a string from secure storage for a username.
         public var keychainString: KeychainString
+        /// Stores a string in secure storage for a username.
         public var keychainSet: KeychainSet
+        /// Removes a username's stored secret.
         public var keychainRemove: KeychainRemove
+        /// Prompts for a single line of input.
         public var readLine: ReadLine
+        /// Prompts for a long line of input, such as a pasted browser callback URL.
         public var readLongLine: ReadLongLine
+        /// Prompts for hidden input, such as a password.
         public var readSecureLine: ReadSecureLine
+        /// Validates the current Apple session.
         public var validateSession: ValidateSession
+        /// Performs username and password login.
         public var login: Login
+        /// Checks whether an Apple ID uses federated authentication.
         public var checkIsFederated: CheckIsFederated
+        /// Completes federated login from a pasted callback URL string.
         public var validateFederatedCallbackURL: ValidateFederatedCallbackURL
+        /// Opens a URL in the host app or system browser.
         public var openURL: OpenURL
+        /// Signs out from the underlying Apple session.
         public var signout: Signout
+        /// Loads data for a URL request, used by developer-portal validation.
         public var loadData: LoadData
+        /// Receives user-visible progress or recovery messages.
         public var log: Log
 
+        /// Creates a dependency container for ``AppleSessionService``.
         public init(
             environmentValue: @escaping EnvironmentValue,
             defaultUsername: @escaping DefaultUsername,
@@ -81,6 +110,7 @@ public actor AppleSessionService {
     private let xcodesPassword = "XCODES_PASSWORD"
     private let dependencies: Dependencies
 
+    /// Creates a service with the host-provided dependencies.
     public init(dependencies: Dependencies) {
         self.dependencies = dependencies
     }
@@ -103,12 +133,24 @@ public actor AppleSessionService {
         return nil
     }
 
+    /// Validates that the current session is authorized to access an Apple Developer download path.
+    ///
+    /// - Parameter path: The developer download path to validate, such as a path from an Xcode release.
     public func validateADCSession(path: String) async throws {
         try await DeveloperPortalSessionService(
             loadData: dependencies.loadData
         ).validateADCSession(path: path)
     }
 
+    /// Ensures that a valid Apple session exists, prompting or signing in only when needed.
+    ///
+    /// The service first calls `validateSession`. If that fails, it looks for a username from the
+    /// provided argument, `XCODES_USERNAME`, or the remembered default username. Passwords are read from
+    /// `XCODES_PASSWORD`, secure storage, or `readSecureLine`. Federated accounts open the identity
+    /// provider URL and ask the user to paste the callback URL.
+    /// - Parameters:
+    ///   - providedUsername: A username to try before environment or default values.
+    ///   - shouldPromptForPassword: Pass `true` to ignore saved passwords and force a password prompt.
     public func loginIfNeeded(withUsername providedUsername: String? = nil, shouldPromptForPassword: Bool = false) async throws {
         do {
             try await dependencies.validateSession()
@@ -180,6 +222,9 @@ public actor AppleSessionService {
         }
     }
 
+    /// Logs in with an explicit username and password, then stores successful credentials.
+    ///
+    /// If Apple reports invalid credentials, the stored password for that username is removed.
     public func login(_ username: String, password: String) async throws {
         do {
             try await dependencies.login(username, password)
@@ -198,6 +243,7 @@ public actor AppleSessionService {
         }
     }
 
+    /// Signs out, removes the stored password, and clears the remembered default username.
     public func logout() async throws {
         guard let username = findUsername() else { throw Error.notAuthenticated }
 
@@ -208,10 +254,14 @@ public actor AppleSessionService {
 }
 
 public extension AppleSessionService {
+    /// Errors raised by the high-level session service before or after Apple authentication.
     enum Error: LocalizedError, Equatable {
+        /// No username or password was available from dependencies or prompting.
         case missingUsernameOrPassword
+        /// Logout was requested when no username could be found.
         case notAuthenticated
 
+        /// A user-visible description of the service error.
         public var errorDescription: String? {
             switch self {
             case .missingUsernameOrPassword:
