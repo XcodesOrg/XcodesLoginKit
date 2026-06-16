@@ -17,9 +17,11 @@ public actor AppleSessionService {
     public typealias ReadLongLine = @Sendable (String) -> String?
     public typealias ReadSecureLine = @Sendable (String) -> String?
     public typealias ValidateSession = @Sendable () async throws -> Void
-    public typealias Login = @Sendable (String, String) async throws -> Void
+    public typealias Login = @Sendable (String, String) async throws -> AuthenticationState
     public typealias CheckIsFederated = @Sendable (String) async throws -> FederationResponse
-    public typealias ValidateFederatedCallbackURL = @Sendable (String) async throws -> Void
+    public typealias ValidateFederatedCallbackURL = @Sendable (String) async throws -> AuthenticationState
+    public typealias RequestSMSSecurityCode = @Sendable (AuthOptionsResponse.TrustedPhoneNumber, AuthOptionsResponse, AppleSessionData) async throws -> AuthenticationState
+    public typealias SubmitSecurityCode = @Sendable (SecurityCode, AppleSessionData) async throws -> AuthenticationState
     public typealias OpenURL = @Sendable (URL) -> Void
     public typealias Signout = @Sendable () async -> Void
     public typealias LoadData = @Sendable (URLRequest) async throws -> (Data, URLResponse)
@@ -57,6 +59,10 @@ public actor AppleSessionService {
         public var checkIsFederated: CheckIsFederated
         /// Completes federated login from a pasted callback URL string.
         public var validateFederatedCallbackURL: ValidateFederatedCallbackURL
+        /// Requests that Apple send an SMS verification code.
+        public var requestSMSSecurityCode: RequestSMSSecurityCode
+        /// Submits a trusted-device or SMS verification code.
+        public var submitSecurityCode: SubmitSecurityCode
         /// Opens a URL in the host app or system browser.
         public var openURL: OpenURL
         /// Signs out from the underlying Apple session.
@@ -81,6 +87,8 @@ public actor AppleSessionService {
             login: @escaping Login,
             checkIsFederated: @escaping CheckIsFederated,
             validateFederatedCallbackURL: @escaping ValidateFederatedCallbackURL,
+            requestSMSSecurityCode: @escaping RequestSMSSecurityCode = { _, _, _ in throw AuthenticationError.accountUsesUnknownAuthenticationKind(nil) },
+            submitSecurityCode: @escaping SubmitSecurityCode = { _, _ in throw AuthenticationError.accountUsesUnknownAuthenticationKind(nil) },
             openURL: @escaping OpenURL,
             signout: @escaping Signout,
             loadData: @escaping LoadData,
@@ -99,6 +107,8 @@ public actor AppleSessionService {
             self.login = login
             self.checkIsFederated = checkIsFederated
             self.validateFederatedCallbackURL = validateFederatedCallbackURL
+            self.requestSMSSecurityCode = requestSMSSecurityCode
+            self.submitSecurityCode = submitSecurityCode
             self.openURL = openURL
             self.signout = signout
             self.loadData = loadData
@@ -151,9 +161,17 @@ public actor AppleSessionService {
     /// - Parameters:
     ///   - providedUsername: A username to try before environment or default values.
     ///   - shouldPromptForPassword: Pass `true` to ignore saved passwords and force a password prompt.
-    public func loginIfNeeded(withUsername providedUsername: String? = nil, shouldPromptForPassword: Bool = false) async throws {
+    ///   - developerDownloadPath: A developer download path that must be authorized before returning.
+    public func loginIfNeeded(
+        withUsername providedUsername: String? = nil,
+        shouldPromptForPassword: Bool = false,
+        developerDownloadPath: String? = nil
+    ) async throws {
         do {
             try await dependencies.validateSession()
+            if let developerDownloadPath {
+                try await validateADCSession(path: developerDownloadPath)
+            }
             return
         } catch {
             var possibleUsername = providedUsername ?? findUsername()
@@ -166,7 +184,8 @@ public actor AppleSessionService {
 
             let federationResponse = try await dependencies.checkIsFederated(username)
             if federationResponse.federated {
-                try await handleFederatedLogin(username: username, federationResponse: federationResponse)
+                let state = try await handleFederatedLogin(username: username, federationResponse: federationResponse)
+                try await completeAuthenticationIfNeeded(state, developerDownloadPath: developerDownloadPath)
                 return
             }
 
@@ -183,19 +202,24 @@ public actor AppleSessionService {
             guard let password = possiblePassword else { throw Error.missingUsernameOrPassword }
 
             do {
-                try await login(username, password: password)
+                let state = try await login(username, password: password)
+                try await completeAuthenticationIfNeeded(state, developerDownloadPath: developerDownloadPath)
             } catch {
                 dependencies.log(error.localizedDescription)
 
                 guard case AuthenticationError.invalidUsernameOrPassword = error else { throw error }
 
                 dependencies.log("Try entering your password again")
-                try await loginIfNeeded(withUsername: username, shouldPromptForPassword: true)
+                try await loginIfNeeded(
+                    withUsername: username,
+                    shouldPromptForPassword: true,
+                    developerDownloadPath: developerDownloadPath
+                )
             }
         }
     }
 
-    private func handleFederatedLogin(username: String, federationResponse: FederationResponse) async throws {
+    private func handleFederatedLogin(username: String, federationResponse: FederationResponse) async throws -> AuthenticationState {
         guard let idpURL = federationResponse.idpURL else {
             throw AuthenticationError.federatedAuthenticationRequired
         }
@@ -215,19 +239,23 @@ public actor AppleSessionService {
             throw Error.missingUsernameOrPassword
         }
 
-        try await dependencies.validateFederatedCallbackURL(callbackURLString)
+        let state = try await dependencies.validateFederatedCallbackURL(callbackURLString)
 
         if dependencies.defaultUsername() != username {
             try? dependencies.setDefaultUsername(username)
         }
+
+        return state
     }
 
     /// Logs in with an explicit username and password, then stores successful credentials.
     ///
     /// If Apple reports invalid credentials, the stored password for that username is removed.
-    public func login(_ username: String, password: String) async throws {
+    @discardableResult
+    public func login(_ username: String, password: String) async throws -> AuthenticationState {
+        let state: AuthenticationState
         do {
-            try await dependencies.login(username, password)
+            state = try await dependencies.login(username, password)
         } catch {
             if case AuthenticationError.invalidUsernameOrPassword = error {
                 try? dependencies.keychainRemove(username)
@@ -240,6 +268,86 @@ public actor AppleSessionService {
 
         if dependencies.defaultUsername() != username {
             try? dependencies.setDefaultUsername(username)
+        }
+
+        return state
+    }
+
+    private func completeAuthenticationIfNeeded(_ state: AuthenticationState, developerDownloadPath: String?) async throws {
+        switch state {
+        case .authenticated:
+            if let developerDownloadPath {
+                try await validateADCSession(path: developerDownloadPath)
+            }
+        case .waitingForSecondFactor(let option, let authOptions, let sessionData):
+            let resolvedOption = try await resolveSecondFactorOption(option, authOptions: authOptions, sessionData: sessionData)
+            let code = try readSecurityCode(for: resolvedOption)
+            let authenticatedState = try await dependencies.submitSecurityCode(code, sessionData)
+            try await completeAuthenticationIfNeeded(authenticatedState, developerDownloadPath: developerDownloadPath)
+        case .notAppleDeveloper:
+            throw AuthenticationError.notDeveloperAppleId
+        case .unauthenticated:
+            throw AuthenticationError.invalidSession
+        case .waitingForFederatedAuthentication:
+            throw AuthenticationError.federatedAuthenticationRequired
+        }
+    }
+
+    private func resolveSecondFactorOption(
+        _ option: TwoFactorOption,
+        authOptions: AuthOptionsResponse,
+        sessionData: AppleSessionData
+    ) async throws -> TwoFactorOption {
+        switch option {
+        case .codeSent, .smsSent, .securityKey:
+            return option
+        case .smsPendingChoice:
+            guard let phoneNumber = try chooseTrustedPhoneNumber(from: authOptions.trustedPhoneNumbers ?? []) else {
+                throw Error.missingUsernameOrPassword
+            }
+            let state = try await dependencies.requestSMSSecurityCode(phoneNumber, authOptions, sessionData)
+            guard case .waitingForSecondFactor(let resolvedOption, _, _) = state else {
+                throw AuthenticationError.unexpectedSignInResponse(statusCode: 200, message: nil)
+            }
+            return resolvedOption
+        }
+    }
+
+    private func chooseTrustedPhoneNumber(from phoneNumbers: [AuthOptionsResponse.TrustedPhoneNumber]) throws -> AuthOptionsResponse.TrustedPhoneNumber? {
+        guard phoneNumbers.isEmpty == false else { return nil }
+        guard phoneNumbers.count > 1 else { return phoneNumbers[0] }
+
+        dependencies.log("Choose a trusted phone number for SMS verification:")
+        for (index, phoneNumber) in phoneNumbers.enumerated() {
+            dependencies.log("\(index + 1)) \(phoneNumber.numberWithDialCode)")
+        }
+
+        guard
+            let choice = dependencies.readLine("Phone number: "),
+            let index = Int(choice),
+            phoneNumbers.indices.contains(index - 1)
+        else {
+            return nil
+        }
+        return phoneNumbers[index - 1]
+    }
+
+    private func readSecurityCode(for option: TwoFactorOption) throws -> SecurityCode {
+        switch option {
+        case .codeSent:
+            guard let code = dependencies.readLine("Apple ID Verification Code: ") else {
+                throw Error.missingUsernameOrPassword
+            }
+            return .device(code: code)
+        case .smsSent(let phoneNumber):
+            guard let code = dependencies.readLine("Apple ID SMS Verification Code (\(phoneNumber.numberWithDialCode)): ") else {
+                throw Error.missingUsernameOrPassword
+            }
+            return .sms(code: code, phoneNumberId: phoneNumber.id)
+        case .smsPendingChoice:
+            throw Error.missingUsernameOrPassword
+        case .securityKey:
+            throw AuthenticationError.userCancelledSecurityKeyAuthentication
         }
     }
 

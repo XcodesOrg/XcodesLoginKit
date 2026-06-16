@@ -136,6 +136,32 @@ final class XcodesLoginKitTests: XCTestCase {
         }
     }
 
+    func testDeveloperPortalSessionServiceMapsForbiddenStatus() async throws {
+        enum ForbiddenTestError: Error, Equatable {
+            case notAuthorized
+        }
+
+        let service = DeveloperPortalSessionService(
+            loadData: { request in
+                let response = try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 403,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+                return (Data(), response)
+            },
+            unauthorizedError: { ForbiddenTestError.notAuthorized }
+        )
+
+        do {
+            try await service.validateADCSession(path: "/download/more")
+            XCTFail("Expected forbidden validation to throw")
+        } catch let error as ForbiddenTestError {
+            XCTAssertEqual(error, .notAuthorized)
+        }
+    }
+
     func testAppleSessionServiceLogoutClearsSessionAndDefaultUsername() async throws {
         let recorder = AppleSessionRecorder(defaultUsername: "test@example.com")
         let service = AppleSessionService(dependencies: recorder.dependencies())
@@ -310,6 +336,28 @@ final class XcodesLoginKitTests: XCTestCase {
         XCTAssertTrue(recorder.didPromptForPassword)
         XCTAssertNil(recorder.openedURL)
     }
+
+    func testAppleSessionServiceCompletesTwoFactorBeforeReturning() async throws {
+        let recorder = AppleSessionRecorder(defaultUsername: "test@example.com")
+        recorder.password = "password123"
+        recorder.loginOutcome = .secondFactor
+        recorder.securityCode = "123456"
+        let service = AppleSessionService(dependencies: recorder.dependencies())
+
+        try await service.loginIfNeeded()
+
+        XCTAssertEqual(recorder.submittedSecurityCode, .device(code: "123456"))
+    }
+
+    func testAppleSessionServiceValidatesDeveloperDownloadPathAfterLogin() async throws {
+        let recorder = AppleSessionRecorder(defaultUsername: "test@example.com")
+        recorder.password = "password123"
+        let service = AppleSessionService(dependencies: recorder.dependencies())
+
+        try await service.loginIfNeeded(developerDownloadPath: "/download/all")
+
+        XCTAssertEqual(recorder.validatedDownloadPath, "/download/all")
+    }
 }
 
 private extension XcodesLoginKitTests {
@@ -395,6 +443,7 @@ private final class AppleSessionRecorder: Sendable {
     enum LoginOutcome: Sendable {
         case success
         case invalidCredentials(username: String)
+        case secondFactor
     }
 
     private struct State: Sendable {
@@ -408,6 +457,9 @@ private final class AppleSessionRecorder: Sendable {
         var didValidateFederatedCallback = false
         var openedURL: URL?
         var password: String?
+        var securityCode: String?
+        var submittedSecurityCode: SecurityCode?
+        var validatedDownloadPath: String?
         var log: [String] = []
     }
 
@@ -477,6 +529,23 @@ private final class AppleSessionRecorder: Sendable {
         }
     }
 
+    var securityCode: String? {
+        get {
+            state.withLock { $0.securityCode }
+        }
+        set {
+            state.withLock { $0.securityCode = newValue }
+        }
+    }
+
+    var submittedSecurityCode: SecurityCode? {
+        state.withLock { $0.submittedSecurityCode }
+    }
+
+    var validatedDownloadPath: String? {
+        state.withLock { $0.validatedDownloadPath }
+    }
+
     var log: [String] {
         state.withLock { $0.log }
     }
@@ -493,7 +562,7 @@ private final class AppleSessionRecorder: Sendable {
             keychainRemove: { key in
                 self.state.withLock { $0.removedKey = key }
             },
-            readLine: { _ in nil },
+            readLine: { _ in self.state.withLock { $0.securityCode } },
             readLongLine: { _ in self.state.withLock { $0.callbackURLString } },
             readSecureLine: { _ in
                 self.state.withLock {
@@ -505,14 +574,32 @@ private final class AppleSessionRecorder: Sendable {
             login: { _, _ in
                 switch self.loginOutcome {
                 case .success:
-                    return
+                    return .authenticated(AppleSession(user: AppleSessionUser(fullName: nil)))
                 case .invalidCredentials(let username):
                     throw AuthenticationError.invalidUsernameOrPassword(username: username)
+                case .secondFactor:
+                    return .waitingForSecondFactor(
+                        .codeSent,
+                        AuthOptionsResponse(
+                            trustedPhoneNumbers: nil,
+                            trustedDevices: nil,
+                            securityCode: AuthOptionsResponse.SecurityCodeInfo(length: 6)
+                        ),
+                        AppleSessionData(serviceKey: "service-key", sessionID: "session-id", scnt: "scnt")
+                    )
                 }
             },
             checkIsFederated: { _ in self.federationResponse },
             validateFederatedCallbackURL: { _ in
                 self.state.withLock { $0.didValidateFederatedCallback = true }
+                return .authenticated(AppleSession(user: AppleSessionUser(fullName: nil)))
+            },
+            requestSMSSecurityCode: { trustedPhoneNumber, authOptions, sessionData in
+                .waitingForSecondFactor(.smsSent(trustedPhoneNumber), authOptions, sessionData)
+            },
+            submitSecurityCode: { code, _ in
+                self.state.withLock { $0.submittedSecurityCode = code }
+                return .authenticated(AppleSession(user: AppleSessionUser(fullName: nil)))
             },
             openURL: { url in
                 self.state.withLock { $0.openedURL = url }
@@ -521,6 +608,12 @@ private final class AppleSessionRecorder: Sendable {
                 self.state.withLock { $0.didSignout = true }
             },
             loadData: { request in
+                if request.url?.host == "developerservices2.apple.com" {
+                    let components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)
+                    self.state.withLock {
+                        $0.validatedDownloadPath = components?.queryItems?.first(where: { $0.name == "path" })?.value
+                    }
+                }
                 let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
                 return (Data(), response)
             },

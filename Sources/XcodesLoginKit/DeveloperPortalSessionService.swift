@@ -27,7 +27,7 @@ public struct DeveloperPortalSessionService: Sendable {
 
     /// Validates authorization for an Apple Developer download path.
     ///
-    /// A `401` response throws `unauthorizedError`; other HTTP responses are treated as a completed
+    /// A `401` or `403` response throws `unauthorizedError`; other HTTP responses are treated as a completed
     /// validation request.
     /// - Parameter path: The path query value for Apple's download authorization endpoint.
     public func validateADCSession(path: String) async throws {
@@ -37,7 +37,7 @@ public struct DeveloperPortalSessionService: Sendable {
             return
         }
 
-        if httpResponse.statusCode == 401 {
+        if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
             throw unauthorizedError()
         }
     }

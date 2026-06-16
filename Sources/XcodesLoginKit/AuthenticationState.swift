@@ -195,7 +195,7 @@ public struct FSAChallenge: Equatable, Decodable, Sendable {
 }
 
 /// A verification code submitted during two-factor authentication.
-public enum SecurityCode: Sendable {
+public enum SecurityCode: Equatable, Sendable {
     /// A code displayed on a trusted Apple device.
     case device(code: String)
     /// A code received by SMS for a specific trusted phone number.
@@ -241,12 +241,20 @@ public struct ServerSRPInitResponse: Decodable, Sendable {
 public struct AppleSession: Decodable, Sendable, Equatable {
     /// User information associated with the session.
     public let user: AppleSessionUser
+
+    public init(user: AppleSessionUser) {
+        self.user = user
+    }
 }
 
 /// User information returned by Apple's session endpoint.
 public struct AppleSessionUser: Decodable, Sendable, Equatable {
     /// The user's full name, when Apple returns it.
     public let fullName: String?
+
+    public init(fullName: String?) {
+        self.fullName = fullName
+    }
 }
 
 /// Describes whether an Apple ID is federated and how to begin identity-provider sign-in.
