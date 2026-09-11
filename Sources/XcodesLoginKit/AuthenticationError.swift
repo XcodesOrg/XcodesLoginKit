@@ -45,6 +45,8 @@ public enum AuthenticationError: Swift.Error, LocalizedError, Equatable, Sendabl
     case invalidFederatedAuthenticationCallback
     /// A password is required because the account is not federated.
     case missingPasswordForNonFederatedAccount
+    /// None of the available Apple sign-in service keys could start authentication.
+    case serviceKeyResolutionFailed(attemptedSources: [AppleServiceKeySource])
     
     /// A user-visible error description.
     public var errorDescription: String? {
@@ -90,6 +92,22 @@ public enum AuthenticationError: Swift.Error, LocalizedError, Equatable, Sendabl
             return "The federated authentication callback URL is missing required parameters."
         case .missingPasswordForNonFederatedAccount:
             return "This Apple ID does not use federated authentication. Enter your password to continue."
+        case let .serviceKeyResolutionFailed(attemptedSources):
+            let sources = attemptedSources.map(\.displayName).joined(separator: ", ")
+            return "Could not establish Apple sign-in using these service-key sources: \(sources). Apple may have changed its authentication flow."
+        }
+    }
+}
+
+private extension AppleServiceKeySource {
+    var displayName: String {
+        switch self {
+        case .bundled:
+            return "the bundled key"
+        case .supplied:
+            return "the supplied key"
+        case .developerPortal:
+            return "Apple's Developer Portal"
         }
     }
 }

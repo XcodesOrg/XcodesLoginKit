@@ -77,6 +77,33 @@ case .unauthenticated, .notAppleDeveloper:
 }
 ```
 
+`Client` resolves Apple's public sign-in widget key in this order:
+
+1. The key bundled with XcodesLoginKit.
+2. An optional key supplied by the application.
+3. The latest key discovered from Apple's Developer Portal sign-in page.
+
+Supply a known fallback key without changing the library:
+
+```swift
+let client = Client(serviceKeyProvider: .fixed("current-public-widget-key"))
+```
+
+For dynamic configuration, supply an asynchronous, `Sendable` loader:
+
+```swift
+let client = Client(
+    serviceKeyProvider: AppleServiceKeyProvider {
+        try await configuration.appleServiceKey()
+    }
+)
+```
+
+The supplied provider and live discovery are lazy: they are only used when the earlier key cannot
+start authentication. If every source fails, the client throws
+`AuthenticationError.serviceKeyResolutionFailed(attemptedSources:)`, whose localized description
+lists the attempted sources.
+
 ### Main flow
 
 1. Create a `Client`. Pass a custom `URLSession` if you want isolated cookie storage.

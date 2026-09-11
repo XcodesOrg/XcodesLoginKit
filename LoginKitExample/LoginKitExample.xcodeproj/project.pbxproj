@@ -8,8 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		E85C97D82D4D7B190062D747 /* XcodesLoginKit in Frameworks */ = {isa = PBXBuildFile; productRef = E85C97D72D4D7B190062D747 /* XcodesLoginKit */; };
-		E8937CD82D4D71AD007C96DE /* XcodesLoginKit in Frameworks */ = {isa = PBXBuildFile; productRef = E8937CD72D4D71AD007C96DE /* XcodesLoginKit */; };
-		E8937CE02D4D7A34007C96DE /* XcodesLoginKit in Frameworks */ = {isa = PBXBuildFile; productRef = E8937CDF2D4D7A34007C96DE /* XcodesLoginKit */; };
+		E8937CD82D4D71AD007C96DE /* XcodesLoginKitSecurityKey in Frameworks */ = {isa = PBXBuildFile; productRef = E8937CD72D4D71AD007C96DE /* XcodesLoginKitSecurityKey */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -58,9 +57,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				E8937CD82D4D71AD007C96DE /* XcodesLoginKit in Frameworks */,
+				E8937CD82D4D71AD007C96DE /* XcodesLoginKitSecurityKey in Frameworks */,
 				E85C97D82D4D7B190062D747 /* XcodesLoginKit in Frameworks */,
-				E8937CE02D4D7A34007C96DE /* XcodesLoginKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -121,8 +119,7 @@
 			);
 			name = LoginKitExample;
 			packageProductDependencies = (
-				E8937CD72D4D71AD007C96DE /* XcodesLoginKit */,
-				E8937CDF2D4D7A34007C96DE /* XcodesLoginKit */,
+				E8937CD72D4D71AD007C96DE /* XcodesLoginKitSecurityKey */,
 				E85C97D72D4D7B190062D747 /* XcodesLoginKit */,
 			);
 			productName = LoginKitExample;
@@ -577,13 +574,9 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = XcodesLoginKit;
 		};
-		E8937CD72D4D71AD007C96DE /* XcodesLoginKit */ = {
+		E8937CD72D4D71AD007C96DE /* XcodesLoginKitSecurityKey */ = {
 			isa = XCSwiftPackageProductDependency;
-			productName = XcodesLoginKit;
-		};
-		E8937CDF2D4D7A34007C96DE /* XcodesLoginKit */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = XcodesLoginKit;
+			productName = XcodesLoginKitSecurityKey;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

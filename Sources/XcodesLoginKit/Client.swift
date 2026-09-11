@@ -21,15 +21,23 @@ public final class Client: Sendable {
     private static let authTypes = ["sa", "hsa", "non-sa", "hsa2"]
     
     private let networkService: AsyncHTTPNetworkService
+    private let serviceKeyProvider: AppleServiceKeyProvider?
     
     /// Creates a client that uses the supplied URL session for all Apple authentication requests.
     ///
     /// Use a custom session when you need isolated cookie storage, imported fastlane cookies, or
     /// test-controlled networking. The session's cookie storage is where authenticated Apple cookies
     /// are read and written.
-    /// - Parameter urlSession: The session used for requests and cookie persistence.
-    public init(urlSession: URLSession = .shared) {
+    /// - Parameters:
+    ///   - urlSession: The session used for requests and cookie persistence.
+    ///   - serviceKeyProvider: Optionally supplies a fallback sign-in widget key. The bundled key is
+    ///     tried first, followed by this provider, then automatic discovery from Apple's sign-in page.
+    public init(
+        urlSession: URLSession = .shared,
+        serviceKeyProvider: AppleServiceKeyProvider? = nil
+    ) {
         self.networkService = AsyncHTTPNetworkService(urlSession: urlSession)
+        self.serviceKeyProvider = serviceKeyProvider
     }
     
     /// The URL session used by the client.
@@ -53,7 +61,9 @@ public final class Client: Sendable {
     ///   - password: The Apple ID password, or `nil` when checking for federated authentication first.
     /// - Returns: The current authentication state.
     public func authenticationState(accountName: String, password: String?) async throws -> AuthenticationState {
-        let federationResponse = try await checkIsFederated(accountName: accountName)
+        let (serviceKey, federationResponse) = try await withResolvedServiceKey { serviceKey in
+            try await checkFederation(accountName: accountName, serviceKey: serviceKey)
+        }
         if federationResponse.federated {
             return .waitingForFederatedAuthentication(federationResponse)
         }
@@ -62,7 +72,7 @@ public final class Client: Sendable {
             throw AuthenticationError.missingPasswordForNonFederatedAccount
         }
 
-        return try await srpLogin(accountName: accountName, password: password)
+        return try await srpLogin(accountName: accountName, password: password, serviceKey: serviceKey)
     }
     
     /// Signs in a non-federated Apple ID with Secure Remote Password authentication.
@@ -74,13 +84,16 @@ public final class Client: Sendable {
     ///   - password: The Apple ID password.
     /// - Returns: `.authenticated` when no additional verification is needed, or a second-factor state.
     public func srpLogin(accountName: String, password: String) async throws -> AuthenticationState {
+        let (serviceKey, _) = try await withResolvedServiceKey { serviceKey in
+            try await checkFederation(accountName: accountName, serviceKey: serviceKey)
+        }
+        return try await srpLogin(accountName: accountName, password: password, serviceKey: serviceKey)
+    }
+
+    private func srpLogin(accountName: String, password: String, serviceKey: String) async throws -> AuthenticationState {
         let client = SRPClient(configuration: SRPConfiguration<SHA256>(.N2048))
         let clientKeys = client.generateKeys()
         let a = clientKeys.public
-        
-        
-        let serviceKeyResponse: ServiceKeyResponse = try await networkService.requestObject(URLRequest.itcServiceKey)
-        let serviceKey = serviceKeyResponse.authServiceKey
         
         // Fixes issue https://github.com/RobotsAndPencils/XcodesApp/issues/360
         // On 2023-02-23, Apple added a custom implementation of hashcash to their auth flow
@@ -217,8 +230,62 @@ public final class Client: Sendable {
 
     /// Checks whether an Apple ID is federated and, when it is, returns identity-provider details.
     public func checkIsFederated(accountName: String) async throws -> FederationResponse {
-        let serviceKeyResponse: ServiceKeyResponse = try await networkService.requestObject(URLRequest.itcServiceKey)
-        return try await checkFederation(accountName: accountName, serviceKey: serviceKeyResponse.authServiceKey)
+        let (_, federationResponse) = try await withResolvedServiceKey { serviceKey in
+            try await checkFederation(accountName: accountName, serviceKey: serviceKey)
+        }
+        return federationResponse
+    }
+
+    private func withResolvedServiceKey<Result>(
+        operation: (String) async throws -> Result
+    ) async throws -> (serviceKey: String, result: Result) {
+        var attemptedSources: [AppleServiceKeySource] = []
+
+        do {
+            let serviceKey = AppleServiceKeyProvider.bundledAppStoreConnectServiceKey
+            return (serviceKey, try await operation(serviceKey))
+        } catch {
+            try Task.checkCancellation()
+            attemptedSources.append(.bundled)
+        }
+
+        if let serviceKeyProvider {
+            do {
+                let serviceKey = try await normalizedServiceKey(awaiting: serviceKeyProvider)
+                return (serviceKey, try await operation(serviceKey))
+            } catch {
+                try Task.checkCancellation()
+                attemptedSources.append(.supplied)
+            }
+        }
+
+        do {
+            let serviceKey = try await discoverLatestServiceKey()
+            return (serviceKey, try await operation(serviceKey))
+        } catch {
+            try Task.checkCancellation()
+            attemptedSources.append(.developerPortal)
+        }
+
+        throw AuthenticationError.serviceKeyResolutionFailed(attemptedSources: attemptedSources)
+    }
+
+    private func normalizedServiceKey(awaiting provider: AppleServiceKeyProvider) async throws -> String {
+        let serviceKey = try await provider.serviceKey().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !serviceKey.isEmpty else { throw ServiceKeyError.empty }
+        return serviceKey
+    }
+
+    private func discoverLatestServiceKey() async throws -> String {
+        let (data, _) = try await networkService.requestData(
+            URLRequest.developerPortalSignInPage,
+            validators: [statusCodeIsIn200s]
+        )
+        guard let html = String(data: data, encoding: .utf8),
+              let match = html.firstMatch(of: /"widgetKey"\s*:\s*"([0-9a-f]{32,64})"/) else {
+            throw ServiceKeyError.notFoundOnDeveloperPortal
+        }
+        return String(match.1)
     }
 
     /// Completes a federated sign-in after the identity provider redirects back with a token.
@@ -439,4 +506,9 @@ extension Data {
     func hexEncodedString() -> String {
         return map { String(format: "%02hhx", $0) }.joined()
     }
+}
+
+private enum ServiceKeyError: Error {
+    case empty
+    case notFoundOnDeveloperPortal
 }

@@ -210,10 +210,6 @@ public enum SecurityCode: Sendable {
     }
 }
 
-struct ServiceKeyResponse: Decodable, Sendable {
-    let authServiceKey: String
-}
-
 struct SignInResponse: Decodable, Sendable {
     let authType: String?
     let serviceErrors: [ServiceError]?

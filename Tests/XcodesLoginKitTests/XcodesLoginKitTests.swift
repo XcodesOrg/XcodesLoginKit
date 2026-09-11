@@ -163,13 +163,11 @@ final class XcodesLoginKitTests: XCTestCase {
     func testClientCheckIsFederatedReturnsFederatedResponse() async throws {
         let client = Client(urlSession: MockURLProtocol.session { request in
             switch request.url {
-            case .itcServiceKey:
-                return try Self.fixtureResponse(
-                    for: request,
-                    resource: "ITCServiceKey",
-                    subdirectory: "Fixtures/Login_Federated_Succeeds"
-                )
             case .federate:
+                XCTAssertEqual(
+                    request.value(forHTTPHeaderField: "X-Apple-Widget-Key"),
+                    "e0b80c3bf78523bfe80974d320935bfa30add02e1bff88ec2166c6bd5a706c42"
+                )
                 return try Self.fixtureResponse(
                     for: request,
                     resource: "FederateCheck",
@@ -192,25 +190,34 @@ final class XcodesLoginKitTests: XCTestCase {
     }
 
     func testClientCheckIsFederatedReturnsNonFederatedResponse() async throws {
-        let client = Client(urlSession: MockURLProtocol.session { request in
-            switch request.url {
-            case .itcServiceKey:
-                return try Self.fixtureResponse(
-                    for: request,
-                    resource: "ITCServiceKey",
-                    subdirectory: "Fixtures/Login_Federated_Succeeds"
-                )
-            case .federate:
-                return try Self.fixtureResponse(
-                    for: request,
-                    resource: "FederateCheckNonFederated",
-                    subdirectory: "Fixtures/Login_Federated_Succeeds"
-                )
-            default:
-                XCTFail("Unexpected request to \(String(describing: request.url))")
-                return Self.emptyResponse(for: request, statusCode: 500)
+        let steps = StepRecorder()
+        let client = Client(
+            urlSession: MockURLProtocol.session { request in
+                switch request.url {
+                case .federate:
+                    let serviceKey = try XCTUnwrap(request.value(forHTTPHeaderField: "X-Apple-Widget-Key"))
+                    steps.record("request:\(serviceKey)")
+                    guard serviceKey == "override-widget-key" else {
+                        return Self.emptyResponse(for: request, statusCode: 401)
+                    }
+                    return try Self.fixtureResponse(
+                        for: request,
+                        resource: "FederateCheckNonFederated",
+                        subdirectory: "Fixtures/Login_Federated_Succeeds"
+                    )
+                case .developerPortalSignInPage:
+                    XCTFail("Should not discover a key after the supplied key succeeds")
+                    return Self.emptyResponse(for: request, statusCode: 500)
+                default:
+                    XCTFail("Unexpected request to \(String(describing: request.url))")
+                    return Self.emptyResponse(for: request, statusCode: 500)
+                }
+            },
+            serviceKeyProvider: AppleServiceKeyProvider {
+                steps.record("provider")
+                return "override-widget-key"
             }
-        })
+        )
 
         let response = try await client.checkIsFederated(accountName: "test@example.com")
 
@@ -218,6 +225,154 @@ final class XcodesLoginKitTests: XCTestCase {
         XCTAssertNil(response.federatedIdpRequest)
         XCTAssertNil(response.federatedAuthIntro)
         XCTAssertNil(response.idpURL)
+        XCTAssertEqual(steps.values, [
+            "request:\(AppleServiceKeyProvider.bundledAppStoreConnectServiceKey)",
+            "provider",
+            "request:override-widget-key"
+        ])
+    }
+
+    func testClientDiscoversLatestServiceKeyWhenBundledKeyFailsAndNoKeyIsSupplied() async throws {
+        let steps = StepRecorder()
+        let client = Client(
+            urlSession: MockURLProtocol.session { request in
+                switch request.url {
+                case .federate:
+                    let serviceKey = try XCTUnwrap(request.value(forHTTPHeaderField: "X-Apple-Widget-Key"))
+                    steps.record("request:\(serviceKey)")
+                    guard serviceKey == Self.signInPageWidgetKey else {
+                        return Self.emptyResponse(for: request, statusCode: 401)
+                    }
+                    return try Self.fixtureResponse(
+                        for: request,
+                        resource: "FederateCheckNonFederated",
+                        subdirectory: "Fixtures/Login_Federated_Succeeds"
+                    )
+                case .developerPortalSignInPage:
+                    steps.record("discover")
+                    return try Self.signInPageResponse(for: request)
+                default:
+                    XCTFail("Unexpected request to \(String(describing: request.url))")
+                    return Self.emptyResponse(for: request, statusCode: 500)
+                }
+            }
+        )
+
+        let response = try await client.checkIsFederated(accountName: "test@example.com")
+
+        XCTAssertFalse(response.federated)
+        XCTAssertEqual(steps.values, [
+            "request:\(AppleServiceKeyProvider.bundledAppStoreConnectServiceKey)",
+            "discover",
+            "request:\(Self.signInPageWidgetKey)"
+        ])
+    }
+
+    func testClientDiscoversLatestServiceKeyAfterSuppliedKeyFails() async throws {
+        let steps = StepRecorder()
+        let client = Client(
+            urlSession: MockURLProtocol.session { request in
+                switch request.url {
+                case .federate:
+                    let serviceKey = try XCTUnwrap(request.value(forHTTPHeaderField: "X-Apple-Widget-Key"))
+                    steps.record("request:\(serviceKey)")
+                    guard serviceKey == Self.signInPageWidgetKey else {
+                        return Self.emptyResponse(for: request, statusCode: 401)
+                    }
+                    return try Self.fixtureResponse(
+                        for: request,
+                        resource: "FederateCheckNonFederated",
+                        subdirectory: "Fixtures/Login_Federated_Succeeds"
+                    )
+                case .developerPortalSignInPage:
+                    steps.record("discover")
+                    return try Self.signInPageResponse(for: request)
+                default:
+                    XCTFail("Unexpected request to \(String(describing: request.url))")
+                    return Self.emptyResponse(for: request, statusCode: 500)
+                }
+            },
+            serviceKeyProvider: AppleServiceKeyProvider {
+                steps.record("provider")
+                return "stale-supplied-key"
+            }
+        )
+
+        let response = try await client.checkIsFederated(accountName: "test@example.com")
+
+        XCTAssertFalse(response.federated)
+        XCTAssertEqual(steps.values, [
+            "request:\(AppleServiceKeyProvider.bundledAppStoreConnectServiceKey)",
+            "provider",
+            "request:stale-supplied-key",
+            "discover",
+            "request:\(Self.signInPageWidgetKey)"
+        ])
+    }
+
+    func testClientReturnsTypedErrorWhenEveryServiceKeySourceFails() async throws {
+        let client = Client(
+            urlSession: MockURLProtocol.session { request in
+                switch request.url {
+                case .federate:
+                    return Self.emptyResponse(for: request, statusCode: 401)
+                case .developerPortalSignInPage:
+                    return try Self.signInPageResponse(for: request)
+                default:
+                    XCTFail("Unexpected request to \(String(describing: request.url))")
+                    return Self.emptyResponse(for: request, statusCode: 500)
+                }
+            },
+            serviceKeyProvider: .fixed("stale-supplied-key")
+        )
+
+        do {
+            _ = try await client.checkIsFederated(accountName: "test@example.com")
+            XCTFail("Expected service-key resolution to fail")
+        } catch AuthenticationError.serviceKeyResolutionFailed(let attemptedSources) {
+            XCTAssertEqual(attemptedSources, [.bundled, .supplied, .developerPortal])
+            let message = AuthenticationError
+                .serviceKeyResolutionFailed(attemptedSources: attemptedSources)
+                .localizedDescription
+            XCTAssertTrue(message.contains("the bundled key"))
+            XCTAssertTrue(message.contains("the supplied key"))
+            XCTAssertTrue(message.contains("Apple's Developer Portal"))
+        }
+    }
+
+    func testHashcashRequestIncludesWidgetKey() throws {
+        let request = try URLRequest.federate(account: "test@example.com", serviceKey: "test-widget-key")
+        let components = try XCTUnwrap(URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false))
+
+        XCTAssertEqual(components.queryItems?.first(where: { $0.name == "widgetKey" })?.value, "test-widget-key")
+    }
+
+    func testAuthenticationStateDoesNotLoadFallbackWhileBundledKeyWorks() async throws {
+        let invocationCounter = InvocationCounter()
+        let client = Client(
+            urlSession: MockURLProtocol.session { request in
+                guard request.url == .federate else {
+                    XCTFail("Unexpected request to \(String(describing: request.url))")
+                    return Self.emptyResponse(for: request, statusCode: 500)
+                }
+                return try Self.fixtureResponse(
+                    for: request,
+                    resource: "FederateCheck",
+                    subdirectory: "Fixtures/Login_Federated_Succeeds"
+                )
+            },
+            serviceKeyProvider: AppleServiceKeyProvider {
+                await invocationCounter.increment()
+                return "test-widget-key"
+            }
+        )
+
+        let state = try await client.authenticationState(accountName: "test@company.com", password: nil)
+        guard case .waitingForFederatedAuthentication = state else {
+            return XCTFail("Expected federated authentication")
+        }
+        let invocationCount = await invocationCounter.value
+        XCTAssertEqual(invocationCount, 0)
     }
 
     func testClientValidateFederatedTokenSucceeds() async throws {
@@ -313,6 +468,22 @@ final class XcodesLoginKitTests: XCTestCase {
 }
 
 private extension XcodesLoginKitTests {
+    static let signInPageWidgetKey =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+    static func signInPageResponse(for request: URLRequest) throws -> (Data, HTTPURLResponse) {
+        let html = #"<html><script>{"widgetKey":"\#(signInPageWidgetKey)"}</script></html>"#
+        return (
+            Data(html.utf8),
+            try XCTUnwrap(HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "text/html"]
+            ))
+        )
+    }
+
     static func fixtureResponse(for request: URLRequest, resource: String, subdirectory: String) throws -> (Data, HTTPURLResponse) {
         let url = try XCTUnwrap(Bundle.module.url(forResource: resource, withExtension: "json", subdirectory: subdirectory))
         let data = try Data(contentsOf: url)
@@ -388,6 +559,26 @@ private final class URLRecorder: Sendable {
 
     func record(_ url: URL) {
         storedURL.withLock { $0 = url }
+    }
+}
+
+private final class StepRecorder: Sendable {
+    private let recordedValues = OSAllocatedUnfairLock<[String]>(initialState: [])
+
+    var values: [String] {
+        recordedValues.withLock { $0 }
+    }
+
+    func record(_ value: String) {
+        recordedValues.withLock { $0.append(value) }
+    }
+}
+
+private actor InvocationCounter {
+    private(set) var value = 0
+
+    func increment() {
+        value += 1
     }
 }
 

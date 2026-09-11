@@ -7,6 +7,7 @@
 
 import Foundation
 import XcodesLoginKit
+import XcodesLoginKitSecurityKey
 import SwiftUI
 
 @Observable
@@ -23,8 +24,8 @@ class AppState {
         
         Task {
             do {
-                let autheticationState = try await client.srpLogin(accountName: username, password: password)
-                handleAuthenticationFlowCompletion(autheticationState)
+                let authenticationState = try await client.authenticationState(accountName: username, password: password)
+                handleAuthenticationFlowCompletion(authenticationState)
                 isProcessingAuthRequest = false
             }
             catch {
@@ -39,6 +40,8 @@ class AppState {
         switch authenticationState {
         case .unauthenticated:
             authError = AuthenticationError.notAuthorized
+        case .waitingForFederatedAuthentication:
+            authError = AuthenticationError.federatedAuthenticationRequired
         case let .waitingForSecondFactor(twoFactorOption, authOptionsResponse, appleSessionData):
             self.presentedSheet = .twoFactor(.init(
                 option: twoFactorOption,
@@ -46,7 +49,7 @@ class AppState {
                 sessionData: AppleSessionData(serviceKey: appleSessionData.serviceKey, sessionID: appleSessionData.sessionID, scnt: appleSessionData.scnt)
             ))
         case .authenticated(let appleSession):
-            print("SUCCESSFULLY LOGGED IN - WELCOME: \(appleSession.user.fullName)")
+            print("SUCCESSFULLY LOGGED IN - WELCOME: \(appleSession.user.fullName ?? "Apple Developer")")
             self.presentedSheet = nil
             break
         case .notAppleDeveloper:
@@ -114,9 +117,7 @@ class AppState {
     }
     
     func cancelSecurityKeyAssertationRequest() {
-        Task {
-            await client.cancelSecurityKeyAssertationRequest()
-        }
+        client.cancelSecurityKeyAssertationRequest()
     }
 }
 enum XcodesSheet: Identifiable {
