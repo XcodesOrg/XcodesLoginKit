@@ -79,8 +79,7 @@ public final class Client: Sendable {
         let a = clientKeys.public
         
         
-        let serviceKeyResponse: ServiceKeyResponse = try await networkService.requestObject(URLRequest.itcServiceKey)
-        let serviceKey = serviceKeyResponse.authServiceKey
+        let serviceKey = try await fetchServiceKey()
         
         // Fixes issue https://github.com/RobotsAndPencils/XcodesApp/issues/360
         // On 2023-02-23, Apple added a custom implementation of hashcash to their auth flow
@@ -179,6 +178,25 @@ public final class Client: Sendable {
         return AuthenticationState.waitingForSecondFactor(option, authOptions, sessionData)
     }
     
+    /// Fetches the service key Apple requires as `X-Apple-Widget-Key` on every auth request.
+    ///
+    /// Apple stopped serving ``URL/itcServiceKey`` on 2026-09-10. That endpoint is still tried
+    /// first, so a restored endpoint needs no change here; otherwise the key is read from the
+    /// `widgetKey` value embedded in the Developer portal sign-in page.
+    private func fetchServiceKey() async throws -> String {
+        if let response: ServiceKeyResponse = try? await networkService.requestObject(URLRequest.itcServiceKey) {
+            return response.authServiceKey
+        }
+
+        let result: (Data, URLResponse) = try await networkService.requestData(URLRequest.developerPortalSignInPage, validators: [])
+
+        guard let html = String(data: result.0, encoding: .utf8),
+              let match = html.firstMatch(of: /"widgetKey"\s*:\s*"([0-9a-f]{32,64})"/) else {
+            throw AuthenticationError.invalidResult(resultString: "Could not determine Apple's authentication service key.")
+        }
+        return String(match.1)
+    }
+
     private func loadHashcash(accountName: String, serviceKey: String) async throws -> String {
         
         let result: (Data, URLResponse) = try await networkService.requestData(URLRequest.federate(account: accountName, serviceKey: serviceKey), validators: [])
@@ -217,8 +235,8 @@ public final class Client: Sendable {
 
     /// Checks whether an Apple ID is federated and, when it is, returns identity-provider details.
     public func checkIsFederated(accountName: String) async throws -> FederationResponse {
-        let serviceKeyResponse: ServiceKeyResponse = try await networkService.requestObject(URLRequest.itcServiceKey)
-        return try await checkFederation(accountName: accountName, serviceKey: serviceKeyResponse.authServiceKey)
+        let serviceKey = try await fetchServiceKey()
+        return try await checkFederation(accountName: accountName, serviceKey: serviceKey)
     }
 
     /// Completes a federated sign-in after the identity provider redirects back with a token.

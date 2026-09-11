@@ -17,6 +17,7 @@ public extension URL {
     static let federate = URL(string: "https://idmsa.apple.com/appleauth/auth/federate")!
     static let federateValidate = URL(string: "https://idmsa.apple.com/appleauth/auth/federate/validate")!
     static let olympusSession = URL(string: "https://appstoreconnect.apple.com/olympus/v1/session")!
+    static let developerPortalSignInPage = URL(string: "https://developer.apple.com/account")!
     static let keyAuth = URL(string: "https://idmsa.apple.com/appleauth/auth/verify/security/key")!
     
     static let srpInit = URL(string: "https://idmsa.apple.com/appleauth/auth/signin/init")!
@@ -27,6 +28,10 @@ public extension URL {
 public extension URLRequest {
     static var itcServiceKey: URLRequest {
         return URLRequest(url: .itcServiceKey)
+    }
+
+    static var developerPortalSignInPage: URLRequest {
+        return URLRequest(url: .developerPortalSignInPage)
     }
 
     static func signIn(serviceKey: String, accountName: String, password: String, hashcash: String) -> URLRequest {

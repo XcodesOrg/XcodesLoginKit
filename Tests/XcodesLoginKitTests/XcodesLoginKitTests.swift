@@ -220,6 +220,62 @@ final class XcodesLoginKitTests: XCTestCase {
         XCTAssertNil(response.idpURL)
     }
 
+    func testClientFallsBackToSignInPageWhenServiceKeyEndpointFails() async throws {
+        let widgetKeyRecorder = HeaderRecorder()
+        let client = Client(urlSession: MockURLProtocol.session { request in
+            switch request.url {
+            case .itcServiceKey:
+                return Self.emptyResponse(for: request, statusCode: 404)
+            case .developerPortalSignInPage:
+                return try Self.signInPageResponse(for: request)
+            case .federate:
+                widgetKeyRecorder.record(request.value(forHTTPHeaderField: "X-Apple-Widget-Key"))
+                return try Self.fixtureResponse(
+                    for: request,
+                    resource: "FederateCheckNonFederated",
+                    subdirectory: "Fixtures/Login_Federated_Succeeds"
+                )
+            default:
+                XCTFail("Unexpected request to \(String(describing: request.url))")
+                return Self.emptyResponse(for: request, statusCode: 500)
+            }
+        })
+
+        let response = try await client.checkIsFederated(accountName: "test@example.com")
+
+        XCTAssertFalse(response.federated)
+        XCTAssertEqual(widgetKeyRecorder.value, Self.signInPageWidgetKey)
+    }
+
+    func testClientPrefersServiceKeyEndpointWhenAvailable() async throws {
+        let client = Client(urlSession: MockURLProtocol.session { request in
+            switch request.url {
+            case .itcServiceKey:
+                return try Self.fixtureResponse(
+                    for: request,
+                    resource: "ITCServiceKey",
+                    subdirectory: "Fixtures/Login_Federated_Succeeds"
+                )
+            case .developerPortalSignInPage:
+                XCTFail("Should not fall back while the service key endpoint works")
+                return Self.emptyResponse(for: request, statusCode: 500)
+            case .federate:
+                return try Self.fixtureResponse(
+                    for: request,
+                    resource: "FederateCheckNonFederated",
+                    subdirectory: "Fixtures/Login_Federated_Succeeds"
+                )
+            default:
+                XCTFail("Unexpected request to \(String(describing: request.url))")
+                return Self.emptyResponse(for: request, statusCode: 500)
+            }
+        })
+
+        let response = try await client.checkIsFederated(accountName: "test@example.com")
+
+        XCTAssertFalse(response.federated)
+    }
+
     func testClientValidateFederatedTokenSucceeds() async throws {
         let client = Client(urlSession: MockURLProtocol.session { request in
             if request.url?.absoluteString.contains("federate/validate") == true {
@@ -327,6 +383,21 @@ private extension XcodesLoginKitTests {
         )
     }
 
+    static let signInPageWidgetKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+    static func signInPageResponse(for request: URLRequest) throws -> (Data, HTTPURLResponse) {
+        let html = #"<html><head><script>var config = {"widgetKey":"\#(signInPageWidgetKey)","rv":1};</script></head></html>"#
+        return (
+            Data(html.utf8),
+            try XCTUnwrap(HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "text/html"]
+            ))
+        )
+    }
+
     static func emptyResponse(for request: URLRequest, statusCode: Int) -> (Data, HTTPURLResponse) {
         (
             Data(),
@@ -388,6 +459,18 @@ private final class URLRecorder: Sendable {
 
     func record(_ url: URL) {
         storedURL.withLock { $0 = url }
+    }
+}
+
+private final class HeaderRecorder: Sendable {
+    private let storedValue = OSAllocatedUnfairLock<String?>(initialState: nil)
+
+    var value: String? {
+        storedValue.withLock { $0 }
+    }
+
+    func record(_ value: String?) {
+        storedValue.withLock { $0 = value }
     }
 }
 
