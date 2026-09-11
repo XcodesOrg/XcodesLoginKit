@@ -18,7 +18,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/XcodesOrg/swift-srp", branch: "main"),
         .package(url: "https://github.com/XcodesOrg/AsyncHTTPNetworkService", branch: "main"),
-        .package(url: "https://github.com/kinoroy/LibFido2Swift", from: "0.1.4"),
+        .package(url: "https://github.com/kinoroy/LibFido2Swift", from: "0.1.6"),
         .package(url: "https://github.com/jpsim/Yams", .upToNextMinor(from: "5.0.1")),
     ],
     targets: [

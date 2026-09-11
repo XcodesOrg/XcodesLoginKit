@@ -1,5 +1,5 @@
 {
-  "originHash" : "db38df1d7f1def65f7f2d6342548320916c6d97825719fcaf91cfeec47c8fff0",
+  "originHash" : "2984fd178de57876931699cbe66ba1ba4d85d58f26a0946bca7b4978b1c853d4",
   "pins" : [
     {
       "identity" : "asynchttpnetworkservice",
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/kinoroy/LibFido2Swift",
       "state" : {
-        "revision" : "94d496d6f850dcbb3e8c4a27cd7eeabfad9f14e3",
-        "version" : "0.1.4"
+        "revision" : "ac8596a852e2b008c5902a521cf4d9c7f0f05fba",
+        "version" : "0.1.6"
       }
     },
     {
