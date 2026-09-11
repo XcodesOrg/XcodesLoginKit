@@ -79,11 +79,16 @@ case .unauthenticated, .notAppleDeveloper:
 
 `Client` resolves Apple's public sign-in widget key in this order:
 
-1. The key bundled with XcodesLoginKit.
-2. An optional key supplied by the application.
-3. The latest key discovered from Apple's Developer Portal sign-in page.
+1. An explicit key supplied by the application, when present.
+2. A key previously saved in XcodesLoginKit's in-memory or on-disk cache.
+3. The `widgetKey` in App Store Connect's unauthenticated `/logout` redirect.
+4. The legacy App Store Connect Olympus configuration endpoint as a final fallback.
 
-Supply a known fallback key without changing the library:
+The sign-out lookup uses a separate cookie-free session and does not follow the redirect. Following
+that redirect would perform a real sign-out, so the authentication session is never used for this
+request.
+
+Supply an explicit key without changing the library:
 
 ```swift
 let client = Client(serviceKeyProvider: .fixed("current-public-widget-key"))
@@ -99,10 +104,10 @@ let client = Client(
 )
 ```
 
-The supplied provider and live discovery are lazy: they are only used when the earlier key cannot
-start authentication. If every source fails, the client throws
-`AuthenticationError.serviceKeyResolutionFailed(attemptedSources:)`, whose localized description
-lists the attempted sources.
+Successful automatic lookups are cached on a best-effort basis. Cache read or write failures do not
+block authentication. If every network source fails, the client throws
+`AuthenticationError.serviceKeyResolutionFailed(attempts:)`, whose localized description includes
+the source-specific failures and HTTP status codes when available.
 
 ### Main flow
 

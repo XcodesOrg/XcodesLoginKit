@@ -8,8 +8,9 @@
 import Foundation
 
 public extension URL {
-    @available(*, deprecated, message: "Apple removed this endpoint. Use AppleServiceKeyProvider instead.")
+    @available(*, deprecated, message: "This endpoint is unreliable and is retained only as a fallback.")
     static let itcServiceKey = URL(string: "https://appstoreconnect.apple.com/olympus/v1/app/config?hostname=itunesconnect.apple.com")!
+    static let appStoreConnectLogout = URL(string: "https://appstoreconnect.apple.com/logout")!
     static let signIn = URL(string: "https://idmsa.apple.com/appleauth/auth/signin")!
     static let authOptions = URL(string: "https://idmsa.apple.com/appleauth/auth")!
     static let requestSecurityCode = URL(string: "https://idmsa.apple.com/appleauth/auth/verify/phone")!
@@ -18,7 +19,6 @@ public extension URL {
     static let federate = URL(string: "https://idmsa.apple.com/appleauth/auth/federate")!
     static let federateValidate = URL(string: "https://idmsa.apple.com/appleauth/auth/federate/validate")!
     static let olympusSession = URL(string: "https://appstoreconnect.apple.com/olympus/v1/session")!
-    static let developerPortalSignInPage = URL(string: "https://developer.apple.com/account")!
     static let keyAuth = URL(string: "https://idmsa.apple.com/appleauth/auth/verify/security/key")!
     
     static let srpInit = URL(string: "https://idmsa.apple.com/appleauth/auth/signin/init")!
@@ -27,13 +27,20 @@ public extension URL {
 }
 
 public extension URLRequest {
-    @available(*, deprecated, message: "Apple removed this endpoint. Use AppleServiceKeyProvider instead.")
+    @available(*, deprecated, message: "This endpoint is unreliable and is retained only as a fallback.")
     static var itcServiceKey: URLRequest {
         URLRequest(url: .itcServiceKey)
     }
 
-    static var developerPortalSignInPage: URLRequest {
-        URLRequest(url: .developerPortalSignInPage)
+    static var olympusServiceKeyFallback: URLRequest {
+        URLRequest(url: URL(string: "https://appstoreconnect.apple.com/olympus/v1/app/config?hostname=itunesconnect.apple.com")!)
+    }
+
+    static var appStoreConnectLogoutServiceKey: URLRequest {
+        var request = URLRequest(url: .appStoreConnectLogout)
+        request.httpMethod = "HEAD"
+        request.httpShouldHandleCookies = false
+        return request
     }
 
     static func signIn(serviceKey: String, accountName: String, password: String, hashcash: String) -> URLRequest {

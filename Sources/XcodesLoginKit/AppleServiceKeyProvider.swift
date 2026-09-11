@@ -1,8 +1,8 @@
-/// Supplies the public Apple widget key used by Apple ID authentication requests.
+/// Supplies an explicit Apple widget key for Apple ID authentication requests.
 ///
-/// Apple does not publish a stable endpoint for discovering this value. XcodesLoginKit tries its
-/// bundled App Store Connect key first, then a key supplied by this provider, and finally attempts
-/// to discover the latest key from Apple's Developer Portal sign-in page.
+/// When a provider is present, XcodesLoginKit tries it before consulting its cache or Apple's
+/// current App Store Connect key sources. The loader is asynchronous so applications can source
+/// the value from their own configuration service.
 public struct AppleServiceKeyProvider: Sendable {
     public typealias Loader = @Sendable () async throws -> String
 
@@ -22,21 +22,57 @@ public struct AppleServiceKeyProvider: Sendable {
     public static func fixed(_ serviceKey: String) -> Self {
         Self { serviceKey }
     }
-
-    /// The public widget key bundled with this version of XcodesLoginKit.
-    public static let bundledAppStoreConnectServiceKey =
-        "e0b80c3bf78523bfe80974d320935bfa30add02e1bff88ec2166c6bd5a706c42"
-
-    /// A provider for the public widget key bundled with this version of XcodesLoginKit.
-    public static let appStoreConnect = fixed(bundledAppStoreConnectServiceKey)
 }
 
-/// Sources XcodesLoginKit can try when resolving Apple's public sign-in service key.
+/// Sources XcodesLoginKit can use when resolving Apple's public sign-in service key.
 public enum AppleServiceKeySource: String, Equatable, Sendable {
-    /// The key bundled with the installed XcodesLoginKit version.
-    case bundled
-    /// A key supplied by the application through ``AppleServiceKeyProvider``.
+    /// A key supplied explicitly by the application.
     case supplied
-    /// A key discovered from Apple's current Developer Portal sign-in page.
-    case developerPortal
+    /// A key read from XcodesLoginKit's best-effort cache.
+    case cache
+    /// A key read from App Store Connect's unauthenticated sign-out redirect.
+    case appStoreConnectSignOut
+    /// A key read from App Store Connect's legacy Olympus configuration endpoint.
+    case olympus
+}
+
+/// Why an Apple service-key source did not produce a usable key.
+public enum AppleServiceKeyFailure: Swift.Error, Equatable, Sendable {
+    /// The source could not be reached.
+    case network(description: String)
+    /// The response was not an HTTP response.
+    case invalidResponse
+    /// The source returned an HTTP error.
+    case httpStatus(code: Int, bodyPreview: String?)
+    /// The App Store Connect sign-out response did not contain a redirect.
+    case missingRedirect
+    /// The sign-out redirect could not be parsed.
+    case invalidRedirect
+    /// The source returned a response without a service key.
+    case missingKey
+
+    /// Whether retrying this failure later may succeed without an application update.
+    public var isRetryable: Bool {
+        switch self {
+        case .network:
+            return true
+        case let .httpStatus(code, _):
+            return code == 429 || code >= 500
+        case .invalidResponse, .missingRedirect, .invalidRedirect, .missingKey:
+            return false
+        }
+    }
+}
+
+/// A failed attempt to resolve Apple's public sign-in service key.
+public struct AppleServiceKeyAttempt: Equatable, Sendable {
+    /// The source that was attempted.
+    public let source: AppleServiceKeySource
+    /// The reason the source did not produce a usable key.
+    public let failure: AppleServiceKeyFailure
+
+    public init(source: AppleServiceKeySource, failure: AppleServiceKeyFailure) {
+        self.source = source
+        self.failure = failure
+    }
 }
