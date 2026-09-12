@@ -45,6 +45,8 @@ public enum AuthenticationError: Swift.Error, LocalizedError, Equatable, Sendabl
     case invalidFederatedAuthenticationCallback
     /// A password is required because the account is not federated.
     case missingPasswordForNonFederatedAccount
+    /// None of Apple's available sign-in service-key sources returned a usable key.
+    case serviceKeyResolutionFailed(attempts: [AppleServiceKeyAttempt])
     
     /// A user-visible error description.
     public var errorDescription: String? {
@@ -90,6 +92,48 @@ public enum AuthenticationError: Swift.Error, LocalizedError, Equatable, Sendabl
             return "The federated authentication callback URL is missing required parameters."
         case .missingPasswordForNonFederatedAccount:
             return "This Apple ID does not use federated authentication. Enter your password to continue."
+        case let .serviceKeyResolutionFailed(attempts):
+            let details = attempts
+                .map { "\($0.source.displayName): \($0.failure.displayName)" }
+                .joined(separator: "; ")
+            return "Could not retrieve Apple's sign-in service key. \(details)"
+        }
+    }
+}
+
+private extension AppleServiceKeySource {
+    var displayName: String {
+        switch self {
+        case .supplied:
+            return "Supplied key"
+        case .cache:
+            return "Cached key"
+        case .appStoreConnectSignOut:
+            return "App Store Connect sign-out redirect"
+        case .olympus:
+            return "App Store Connect Olympus endpoint"
+        }
+    }
+}
+
+private extension AppleServiceKeyFailure {
+    var displayName: String {
+        switch self {
+        case let .network(description):
+            return "network request failed (\(description))"
+        case .invalidResponse:
+            return "returned a non-HTTP response"
+        case let .httpStatus(code, bodyPreview):
+            if let bodyPreview {
+                return "returned HTTP \(code) (\(bodyPreview))"
+            }
+            return "returned HTTP \(code)"
+        case .missingRedirect:
+            return "did not return a Location header"
+        case .invalidRedirect:
+            return "returned an invalid Location header"
+        case .missingKey:
+            return "did not contain a service key"
         }
     }
 }

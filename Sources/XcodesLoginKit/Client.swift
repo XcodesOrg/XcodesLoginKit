@@ -21,15 +21,33 @@ public final class Client: Sendable {
     private static let authTypes = ["sa", "hsa", "non-sa", "hsa2"]
     
     private let networkService: AsyncHTTPNetworkService
+    private let serviceKeyResolver: AppleServiceKeyResolver
     
     /// Creates a client that uses the supplied URL session for all Apple authentication requests.
     ///
     /// Use a custom session when you need isolated cookie storage, imported fastlane cookies, or
     /// test-controlled networking. The session's cookie storage is where authenticated Apple cookies
     /// are read and written.
-    /// - Parameter urlSession: The session used for requests and cookie persistence.
-    public init(urlSession: URLSession = .shared) {
+    /// - Parameters:
+    ///   - urlSession: The session used for requests and cookie persistence.
+    ///   - serviceKeyProvider: Optionally supplies an explicit sign-in widget key. Without one, the
+    ///     client uses its cache, App Store Connect's sign-out redirect, then the legacy Olympus endpoint.
+    public convenience init(
+        urlSession: URLSession = .shared,
+        serviceKeyProvider: AppleServiceKeyProvider? = nil
+    ) {
+        self.init(
+            urlSession: urlSession,
+            serviceKeyResolver: .live(
+                provider: serviceKeyProvider,
+                authenticationSession: urlSession
+            )
+        )
+    }
+
+    init(urlSession: URLSession, serviceKeyResolver: AppleServiceKeyResolver) {
         self.networkService = AsyncHTTPNetworkService(urlSession: urlSession)
+        self.serviceKeyResolver = serviceKeyResolver
     }
     
     /// The URL session used by the client.
@@ -53,7 +71,8 @@ public final class Client: Sendable {
     ///   - password: The Apple ID password, or `nil` when checking for federated authentication first.
     /// - Returns: The current authentication state.
     public func authenticationState(accountName: String, password: String?) async throws -> AuthenticationState {
-        let federationResponse = try await checkIsFederated(accountName: accountName)
+        let serviceKey = try await serviceKeyResolver.serviceKey()
+        let federationResponse = try await checkFederation(accountName: accountName, serviceKey: serviceKey)
         if federationResponse.federated {
             return .waitingForFederatedAuthentication(federationResponse)
         }
@@ -62,7 +81,7 @@ public final class Client: Sendable {
             throw AuthenticationError.missingPasswordForNonFederatedAccount
         }
 
-        return try await srpLogin(accountName: accountName, password: password)
+        return try await srpLogin(accountName: accountName, password: password, serviceKey: serviceKey)
     }
     
     /// Signs in a non-federated Apple ID with Secure Remote Password authentication.
@@ -74,13 +93,14 @@ public final class Client: Sendable {
     ///   - password: The Apple ID password.
     /// - Returns: `.authenticated` when no additional verification is needed, or a second-factor state.
     public func srpLogin(accountName: String, password: String) async throws -> AuthenticationState {
+        let serviceKey = try await serviceKeyResolver.serviceKey()
+        return try await srpLogin(accountName: accountName, password: password, serviceKey: serviceKey)
+    }
+
+    private func srpLogin(accountName: String, password: String, serviceKey: String) async throws -> AuthenticationState {
         let client = SRPClient(configuration: SRPConfiguration<SHA256>(.N2048))
         let clientKeys = client.generateKeys()
         let a = clientKeys.public
-        
-        
-        let serviceKeyResponse: ServiceKeyResponse = try await networkService.requestObject(URLRequest.itcServiceKey)
-        let serviceKey = serviceKeyResponse.authServiceKey
         
         // Fixes issue https://github.com/RobotsAndPencils/XcodesApp/issues/360
         // On 2023-02-23, Apple added a custom implementation of hashcash to their auth flow
@@ -217,8 +237,8 @@ public final class Client: Sendable {
 
     /// Checks whether an Apple ID is federated and, when it is, returns identity-provider details.
     public func checkIsFederated(accountName: String) async throws -> FederationResponse {
-        let serviceKeyResponse: ServiceKeyResponse = try await networkService.requestObject(URLRequest.itcServiceKey)
-        return try await checkFederation(accountName: accountName, serviceKey: serviceKeyResponse.authServiceKey)
+        let serviceKey = try await serviceKeyResolver.serviceKey()
+        return try await checkFederation(accountName: accountName, serviceKey: serviceKey)
     }
 
     /// Completes a federated sign-in after the identity provider redirects back with a token.
