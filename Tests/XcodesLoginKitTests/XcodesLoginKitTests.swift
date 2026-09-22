@@ -1,5 +1,6 @@
 import XCTest
 import os
+import AsyncNetworkService
 @testable import XcodesLoginKit
 
 final class XcodesLoginKitTests: XCTestCase {
@@ -218,6 +219,74 @@ final class XcodesLoginKitTests: XCTestCase {
         XCTAssertNil(response.federatedIdpRequest)
         XCTAssertNil(response.federatedAuthIntro)
         XCTAssertNil(response.idpURL)
+    }
+
+    func testSrpLoginThrowsAccountLockedWhenAppleRejectsCredentialsWithJSON() async throws {
+        let client = Client(
+            urlSession: MockURLProtocol.session { request in
+                switch request.url?.path {
+                case "/appleauth/auth/signin":
+                    return Self.hashcashChallengeResponse(for: request)
+                case "/appleauth/auth/signin/init":
+                    return Self.srpInitResponse(for: request)
+                case "/appleauth/auth/signin/complete":
+                    return Self.response(
+                        url: request.url!,
+                        statusCode: 403,
+                        headers: ["Content-Type": "application/json"],
+                        body: Data(#"{"serviceErrors":[{"code":"-20209","message":"Your account has been locked for security reasons."}]}"#.utf8)
+                    )
+                default:
+                    XCTFail("Unexpected request to \(String(describing: request.url))")
+                    return Self.emptyResponse(for: request, statusCode: 500)
+                }
+            },
+            serviceKeyProvider: .fixed("test-widget-key")
+        )
+
+        do {
+            _ = try await client.srpLogin(accountName: "test@example.com", password: "password123")
+            XCTFail("Expected srpLogin to throw")
+        } catch AuthenticationError.accountLocked(let message) {
+            XCTAssertEqual(message, "Your account has been locked for security reasons.")
+        }
+    }
+
+    /// Regression test for https://github.com/XcodesOrg/XcodesApp - when Apple locks an account it can
+    /// respond to `/appleauth/auth/signin/complete` with an HTML error page instead of JSON. `srpLogin`
+    /// used to unconditionally decode the response body as `SignInResponse` before looking at the HTTP
+    /// status code, so this case threw a `NetworkError.decoding` with Foundation's raw `DecodingError`
+    /// description ("Unexpected character '<' around line 1, column 1.") instead of a readable
+    /// `AuthenticationError.accountLocked`.
+    func testSrpLoginThrowsDescriptiveAccountLockedErrorWhenAppleRejectsCredentialsWithHTML() async throws {
+        let client = Client(
+            urlSession: MockURLProtocol.session { request in
+                switch request.url?.path {
+                case "/appleauth/auth/signin":
+                    return Self.hashcashChallengeResponse(for: request)
+                case "/appleauth/auth/signin/init":
+                    return Self.srpInitResponse(for: request)
+                case "/appleauth/auth/signin/complete":
+                    return Self.response(
+                        url: request.url!,
+                        statusCode: 403,
+                        headers: ["Content-Type": "text/html"],
+                        body: Data("<html><body>Your account has been locked.</body></html>".utf8)
+                    )
+                default:
+                    XCTFail("Unexpected request to \(String(describing: request.url))")
+                    return Self.emptyResponse(for: request, statusCode: 500)
+                }
+            },
+            serviceKeyProvider: .fixed("test-widget-key")
+        )
+
+        do {
+            _ = try await client.srpLogin(accountName: "test@example.com", password: "password123")
+            XCTFail("Expected srpLogin to throw")
+        } catch AuthenticationError.accountLocked(let message) {
+            XCTAssertTrue(message.contains("<html>"))
+        }
     }
 
     func testServiceKeyResolverReadsKeyFromSignOutRedirect() async throws {
@@ -692,6 +761,34 @@ private extension XcodesLoginKitTests {
             headers: [
                 "Location": "https://idmsa.apple.com/appleauth/signout?widgetKey=\(widgetKey)&asop=destroy-session&asoc=/&rv=3"
             ]
+        )
+    }
+
+    static func hashcashChallengeResponse(for request: URLRequest) -> (Data, HTTPURLResponse) {
+        response(
+            url: request.url!,
+            statusCode: 200,
+            headers: [
+                "X-Apple-HC-Bits": "10",
+                "X-Apple-HC-Challenge": "test-challenge"
+            ]
+        )
+    }
+
+    static func srpInitResponse(for request: URLRequest) -> (Data, HTTPURLResponse) {
+        response(
+            url: request.url!,
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Data(#"""
+            {
+                "iteration": 1000,
+                "salt": "wxAUaTClaHAt/Eu/GZiknQ==",
+                "b": "pUnTawiQMLX341TkdTZKqjvS8VuxAgHrntM2dX6rrDOau+cVjUGkZdiicVkNpUTk8utqdxgB+EOVjSVIfzJyMvB0aF/V1eW84HYPhBnd5w44mElwag6qOWVg9YFtQRcpFYL1HBsPBbdNyRo0CInXr1hJBtSmyMM4w403cDi06WFf29gzMqSa49vhCW91RqoCvfS+Adwt2UNxXbRBwojr2jwmMAiad6JCaK8ViuVcVy5oTUm6X2M0RUjGAueUSHnLvgBN3D+bycL42ABRMXc1yTBE+BFtcuf9HrY01YTjCpXCahQOISChqhcQh0Ov702XG9FBhZMM5YQ2g7mL/AW4kA==",
+                "c": "test-c-value",
+                "protocol": "s2k"
+            }
+            """#.utf8)
         )
     }
 

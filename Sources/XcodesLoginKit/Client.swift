@@ -133,31 +133,39 @@ public final class Client: Sendable {
             throw NetworkError.invalidResponseFormat
         }
         let data = result.0
-        
-        var responseBody: SignInResponse
-        do {
-            responseBody = try JSONDecoder.networkJSONDecoder.decode(SignInResponse.self, from: data)
-        } catch {
-            throw NetworkError.decoding(error: error)
-        }
-        
-        
+
+        // The response is not always JSON, so we decode it optionally to avoid throwing an error on non-JSON responses.
+        let responseBody = try? JSONDecoder.networkJSONDecoder.decode(SignInResponse.self, from: data)
+
         switch httpResponse.statusCode {
         case 200:
             return try await self.validateSession()
         case 401:
             throw AuthenticationError.invalidUsernameOrPassword(username: accountName)
         case 403:
-            let errorMessage = responseBody.serviceErrors?.first?.description.replacingOccurrences(of: "-20209: ", with: "") ?? ""
+            let errorMessage = responseBody?.serviceErrors?.first?.description.replacingOccurrences(of: "-20209: ", with: "")
+                ?? Self.unreadableResponseMessage(data: data)
             throw AuthenticationError.accountLocked(errorMessage)
         case 409:
             return try await self.handleTwoStepOrFactor(data: data, response: httpResponse, serviceKey: serviceKey)
-        case 412 where Client.authTypes.contains(responseBody.authType ?? ""):
+        case 412 where Client.authTypes.contains(responseBody?.authType ?? ""):
             throw AuthenticationError.appleIDAndPrivacyAcknowledgementRequired
         default:
-            throw AuthenticationError.unexpectedSignInResponse(statusCode: httpResponse.statusCode,
-                                                 message: responseBody.serviceErrors?.map { $0.description }.joined(separator: ", "))
+            let message = responseBody?.serviceErrors?.map { $0.description }.joined(separator: ", ")
+                ?? Self.unreadableResponseMessage(data: data)
+            throw AuthenticationError.unexpectedSignInResponse(statusCode: httpResponse.statusCode, message: message)
         }
+    }
+
+    /// A readable fallback for sign-in error bodies that aren't JSON, e.g. an HTML error page Apple
+    /// returns when it rejects an account.
+    private static func unreadableResponseMessage(data: Data, previewLimit: Int = 200) -> String {
+        guard let body = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !body.isEmpty else {
+            return "Apple didn't return a readable error message."
+        }
+        let preview = body.count > previewLimit ? String(body.prefix(previewLimit)) + "…" : body
+        return "Apple returned a response that couldn't be parsed as JSON: \(preview)"
     }
     
     func handleTwoStepOrFactor(data: Data, response: URLResponse, serviceKey: String) async throws -> AuthenticationState {
