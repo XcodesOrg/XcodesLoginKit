@@ -682,6 +682,175 @@ final class XcodesLoginKitTests: XCTestCase {
         XCTAssertTrue(recorder.didPromptForPassword)
         XCTAssertNil(recorder.openedURL)
     }
+
+    // MARK: - FederationResponse.idpURL
+
+    func testIdpURLReturnsNilWhenNoRequest() {
+        let response = FederationResponse(federated: true, federatedIdpRequest: nil)
+        XCTAssertNil(response.idpURL)
+    }
+
+    func testIdpURLPassesGETRequestParamsThroughUnchanged() throws {
+        let response = FederationResponse(
+            federated: true,
+            federatedIdpRequest: FederatedIdpRequest(
+                idPUrl: "https://login.microsoftonline.com/test-tenant/oauth2/authorize",
+                requestParams: ["login_hint": "test@company.com"],
+                httpMethod: "GET"
+            )
+        )
+
+        XCTAssertFalse(response.usesPostBinding)
+
+        let url = try XCTUnwrap(response.idpURL)
+        let items = try queryItems(from: url)
+        XCTAssertEqual(items["login_hint"], "test@company.com")
+    }
+
+    func testIdpURLReportsPostBinding() {
+        let response = FederationResponse(
+            federated: true,
+            federatedIdpRequest: FederatedIdpRequest(
+                idPUrl: "https://login.microsoftonline.com/test-tenant/oauth2/authorize",
+                requestParams: ["SAMLRequest": Data("<xml/>".utf8).base64EncodedString()],
+                httpMethod: "POST"
+            )
+        )
+
+        XCTAssertTrue(response.usesPostBinding)
+        XCTAssertTrue(response.isSAMLRequest)
+    }
+
+    func testIsSAMLRequestReflectsSAMLRequestParameter() {
+        let saml = FederationResponse(
+            federated: true,
+            federatedIdpRequest: FederatedIdpRequest(
+                idPUrl: "https://login.microsoftonline.com/test-tenant/oauth2/authorize",
+                requestParams: ["SAMLRequest": "abc"],
+                httpMethod: "GET"
+            )
+        )
+        XCTAssertTrue(saml.isSAMLRequest)
+
+        let oidc = FederationResponse(
+            federated: true,
+            federatedIdpRequest: FederatedIdpRequest(
+                idPUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+                requestParams: ["client_id": "abc", "response_type": "code"],
+                httpMethod: "POST"
+            )
+        )
+        XCTAssertFalse(oidc.isSAMLRequest)
+
+        let none = FederationResponse(federated: true, federatedIdpRequest: nil)
+        XCTAssertFalse(none.isSAMLRequest)
+    }
+
+    func testIdpURLReEncodesPostSAMLRequestAsRawDeflate() throws {
+        // Apple's POST-binding SAMLRequest is base64 of the uncompressed XML.
+        let samlXML = "<samlp:AuthnRequest xmlns:samlp=\"urn:oasis:names:tc:SAML:2.0:protocol\" ID=\"_abc123\" Version=\"2.0\" IssueInstant=\"2026-10-13T00:00:00Z\">redirect-binding round-trip test content</samlp:AuthnRequest>"
+        let samlData = Data(samlXML.utf8)
+        let postBindingSAMLRequest = samlData.base64EncodedString()
+
+        let response = FederationResponse(
+            federated: true,
+            federatedIdpRequest: FederatedIdpRequest(
+                idPUrl: "https://login.microsoftonline.com/test-tenant/oauth2/authorize",
+                requestParams: [
+                    "SAMLRequest": postBindingSAMLRequest,
+                    "RelayState": "state-123"
+                ],
+                httpMethod: "POST"
+            )
+        )
+
+        let url = try XCTUnwrap(response.idpURL)
+        let items = try queryItems(from: url)
+
+        // RelayState is preserved untouched.
+        XCTAssertEqual(items["RelayState"], "state-123")
+
+        // The SAMLRequest value must have changed (it is now DEFLATE-compressed, not raw base64 XML).
+        let redirectBindingSAMLRequest = try XCTUnwrap(items["SAMLRequest"])
+        XCTAssertNotEqual(redirectBindingSAMLRequest, postBindingSAMLRequest)
+
+        // And it must inflate back to the original XML (raw DEFLATE / RFC 1951).
+        let compressed = try XCTUnwrap(Data(base64Encoded: redirectBindingSAMLRequest))
+        let inflated = try (compressed as NSData).decompressed(using: .zlib) as Data
+        XCTAssertEqual(inflated, samlData)
+    }
+
+    func testIdpURLPercentEncodesPlusInSAMLRequest() throws {
+        // A base64 payload containing '+' must be percent-encoded as %2B, otherwise the identity
+        // provider decodes '+' to a space and rejects the request (Entra AADSTS750056).
+        let response = FederationResponse(
+            federated: true,
+            federatedIdpRequest: FederatedIdpRequest(
+                idPUrl: "https://login.microsoftonline.com/test-tenant/oauth2/authorize",
+                requestParams: ["SAMLRequest": "ab+cd/ef=="],
+                // GET so the value is passed through verbatim and we can assert on encoding only.
+                httpMethod: "GET"
+            )
+        )
+
+        let url = try XCTUnwrap(response.idpURL)
+        let rawQuery = try XCTUnwrap(url.query)
+        XCTAssertTrue(rawQuery.contains("%2B"), "'+' should be percent-encoded, got: \(rawQuery)")
+        XCTAssertFalse(rawQuery.contains("+"), "query must not contain a literal '+', got: \(rawQuery)")
+        // '/' and '=' are also form-urlencoded concerns and must be escaped.
+        XCTAssertTrue(rawQuery.contains("%2F"), "'/' should be percent-encoded, got: \(rawQuery)")
+        XCTAssertFalse(rawQuery.contains("/"), "query must not contain a literal '/', got: \(rawQuery)")
+        XCTAssertTrue(rawQuery.contains("%3D"), "'=' should be percent-encoded, got: \(rawQuery)")
+
+        // Round-trips back to the exact original value.
+        let items = try queryItems(from: url)
+        XCTAssertEqual(items["SAMLRequest"], "ab+cd/ef==")
+    }
+
+    func testIdpURLPassesNonSAMLPostRequestThroughAsGET() throws {
+        // A POST request that is not SAML (e.g. OIDC form_post) has no SAMLRequest to DEFLATE. Its
+        // parameters are opened as-is rather than being dropped, so federated OIDC still works.
+        let response = FederationResponse(
+            federated: true,
+            federatedIdpRequest: FederatedIdpRequest(
+                idPUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+                requestParams: ["client_id": "test-client", "response_type": "code"],
+                httpMethod: "POST"
+            )
+        )
+
+        XCTAssertTrue(response.usesPostBinding)
+        XCTAssertFalse(response.isSAMLRequest)
+
+        let url = try XCTUnwrap(response.idpURL)
+        let items = try queryItems(from: url)
+        XCTAssertEqual(items["client_id"], "test-client")
+        XCTAssertEqual(items["response_type"], "code")
+    }
+
+    func testIdpURLReturnsNilForInvalidBase64SAMLRequest() {
+        // Invalid base64 in a SAML POST request can't be DEFLATE re-encoded; idpURL is nil rather
+        // than a broken redirect URL.
+        let response = FederationResponse(
+            federated: true,
+            federatedIdpRequest: FederatedIdpRequest(
+                idPUrl: "https://login.microsoftonline.com/test-tenant/oauth2/authorize",
+                requestParams: ["SAMLRequest": "not-valid-base64!!!"],
+                httpMethod: "POST"
+            )
+        )
+
+        XCTAssertNil(response.idpURL)
+    }
+
+    private func queryItems(from url: URL) throws -> [String: String] {
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        var result: [String: String] = [:]
+        for item in components.queryItems ?? [] {
+            result[item.name] = item.value
+        }
+        return result
+    }
 }
 
 private extension XcodesLoginKitTests {

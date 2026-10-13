@@ -271,11 +271,64 @@ public struct FederationResponse: Decodable, Equatable, Sendable {
     /// A ready-to-open identity-provider URL containing Apple's request parameters.
     public var idpURL: URL? {
         guard let idpRequest = federatedIdpRequest else { return nil }
-        var components = URLComponents(string: idpRequest.idPUrl)
-        components?.queryItems = idpRequest.requestParams.map { key, value in
-            URLQueryItem(name: key, value: value)
+
+        if usesPostBinding, isSAMLRequest {
+            // SAML HTTP-POST binding: convert to the HTTP-Redirect binding so it opens as a GET.
+            return Self.convertSAMLPOSTtoGET(for: idpRequest)
+        } else {
+            // SAML HTTP-Redirect binding, OIDC, or a plain federated GET: open the params as-is.
+            return Self.getRequestURL(for: idpRequest, params: idpRequest.requestParams)
         }
-        return components?.url
+    }
+
+    /// Whether the identity provider expects the request via an HTTP form POST
+    public var usesPostBinding: Bool {
+        federatedIdpRequest?.httpMethod?.uppercased() == "POST"
+    }
+
+    /// Whether the request is a SAML request (carries a `SAMLRequest` parameter)
+    public var isSAMLRequest: Bool {
+        federatedIdpRequest?.requestParams["SAMLRequest"] != nil
+    }
+
+    /// Builds a GET URL by appending `params` to the endpoint as a percent-encoded query string.
+    private static func getRequestURL(for idpRequest: FederatedIdpRequest, params: [String: String]) -> URL? {
+        guard var components = URLComponents(string: idpRequest.idPUrl) else { return nil }
+        components.percentEncodedQuery = formURLEncodedQuery(from: params)
+        return components.url
+    }
+
+    /// Converts a SAML HTTP-POST-binding request into an HTTP-Redirect-binding GET URL.
+    ///
+    /// Only called for requests that carry a `SAMLRequest` (see ``isSAMLRequest``). Apple's
+    /// POST-binding `SAMLRequest` is base64 of the uncompressed SAML XML; the redirect binding
+    /// requires it to be raw-DEFLATE compressed and re-base64-encoded. All other parameters are
+    /// preserved. Returns `nil` if the `SAMLRequest` value cannot be decoded and re-compressed — a
+    /// broken redirect URL would only be rejected by the identity provider, so no URL is produced in
+    /// that case.
+    private static func convertSAMLPOSTtoGET(for idpRequest: FederatedIdpRequest) -> URL? {
+        var params = idpRequest.requestParams
+
+        guard let samlRequest = params["SAMLRequest"],
+              let rawXML = Data(base64Encoded: samlRequest),
+              let deflated = rawXML.samlDeflated() else {
+            return nil
+        }
+
+        params["SAMLRequest"] = deflated.base64EncodedString()
+        return getRequestURL(for: idpRequest, params: params)
+    }
+
+    /// Builds a percent-encoded query string from the given parameters, encoding every character
+    /// outside the RFC 3986 unreserved set.
+    private static func formURLEncodedQuery(from params: [String: String]) -> String {
+        params
+            .map { key, value in
+                let encodedKey = key.addingPercentEncoding(withAllowedCharacters: .urlFormValueAllowed) ?? key
+                let encodedValue = value.addingPercentEncoding(withAllowedCharacters: .urlFormValueAllowed) ?? value
+                return "\(encodedKey)=\(encodedValue)"
+            }
+            .joined(separator: "&")
     }
 }
 
@@ -355,4 +408,21 @@ public struct FederatedAuthenticationCallback: Equatable, Sendable {
 
         try self.init(callbackURL: callbackURL)
     }
+}
+
+private extension Data {
+    func samlDeflated() -> Data? {
+        guard !isEmpty else { return nil }
+        return try? (self as NSData).compressed(using: .zlib) as Data
+    }
+}
+
+private extension CharacterSet {
+    /// The RFC 3986 unreserved characters (`A-Z a-z 0-9 - . _ ~`), suitable for percent-encoding a
+    /// query-string value that will be decoded as `application/x-www-form-urlencoded`.
+    static let urlFormValueAllowed: CharacterSet = {
+        var set = CharacterSet.alphanumerics
+        set.insert(charactersIn: "-._~")
+        return set
+    }()
 }
